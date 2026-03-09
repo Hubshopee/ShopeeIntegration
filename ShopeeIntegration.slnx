@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="ShopeeIntegration.Application/ShopeeIntegration.Application.csproj" />
+  <Project Path="ShopeeIntegration.Domain/ShopeeIntegration.Domain.csproj" />
+  <Project Path="ShopeeIntegration.Infrastructure/ShopeeIntegration.Infrastructure.csproj" />
+  <Project Path="ShopeeIntegration.Worker/ShopeeIntegration.Worker.csproj" />
+</Solution>
