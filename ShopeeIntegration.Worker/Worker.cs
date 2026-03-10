@@ -72,21 +72,14 @@ public class Worker : BackgroundService
         var dadosService = scope.ServiceProvider.GetRequiredService<DadosSyncService>();
         var catalogoNoturnoService = scope.ServiceProvider.GetRequiredService<CatalogoNoturnoSyncService>();
 
-        try
-        {
-            var accessToken = await tokenService.ObterTokenValido();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Falha ao atualizar token da Shopee");
-            return;
-        }
+        var accessToken = await tokenService.ObterTokenValido();
 
         if (DeveExecutarEstoque())
         {
             var produtosEstoque = await estoqueService.BuscarPendentes();
-
             _logger.LogInformation("Estoque pendente: {total}", produtosEstoque.Count);
+
+            // enviar estoque com accessToken aqui
 
             if (produtosEstoque.Any())
                 await estoqueService.AtualizarCheckpoint(produtosEstoque);
@@ -99,6 +92,8 @@ public class Worker : BackgroundService
 
             _logger.LogInformation("Preço pendente: {total}", produtosPreco.Count);
             _logger.LogInformation("Dados pendente: {total}", produtosDados.Count);
+
+            // enviar preço e dados com accessToken aqui
 
             if (produtosPreco.Any() || produtosDados.Any())
                 await catalogoNoturnoService.AtualizarCheckpoint(produtosPreco, produtosDados);
