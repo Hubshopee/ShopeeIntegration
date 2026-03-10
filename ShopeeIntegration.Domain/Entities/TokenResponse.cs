@@ -1,0 +1,15 @@
+using System.Text.Json.Serialization;
+
+namespace ShopeeIntegration.Domain.Entities;
+
+public class TokenResponse
+{
+    [JsonPropertyName("access_token")]
+    public string AccessToken { get; set; } = "";
+
+    [JsonPropertyName("refresh_token")]
+    public string RefreshToken { get; set; } = "";
+
+    [JsonPropertyName("expire_in")]
+    public int ExpireIn { get; set; }
+}
