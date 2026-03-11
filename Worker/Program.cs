@@ -33,7 +33,19 @@ builder.Services.AddHttpClient<ShopeeAuthService>()
     ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
 });
 
+builder.Services.AddHttpClient<ShopeeCatalogService>()
+.ConfigureHttpClient((service, client) =>
+{
+    var config = service.GetRequiredService<IOptions<ShopeeConfig>>().Value;
+    client.BaseAddress = new Uri(config.BaseUrl);
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+});
+
 builder.Services.AddScoped<TokenSyncService>();
+builder.Services.AddScoped<CadastroProdutoService>();
 builder.Services.AddScoped<EstoqueSyncService>();
 builder.Services.AddScoped<PrecoSyncService>();
 builder.Services.AddScoped<DadosSyncService>();

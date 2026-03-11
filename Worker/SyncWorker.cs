@@ -67,12 +67,15 @@ public class SyncWorker : BackgroundService
         using var scope = _scopeFactory.CreateScope();
 
         var tokenService = scope.ServiceProvider.GetRequiredService<TokenSyncService>();
+        var cadastroProdutoService = scope.ServiceProvider.GetRequiredService<CadastroProdutoService>();
         var estoqueService = scope.ServiceProvider.GetRequiredService<EstoqueSyncService>();
         var precoService = scope.ServiceProvider.GetRequiredService<PrecoSyncService>();
         var dadosService = scope.ServiceProvider.GetRequiredService<DadosSyncService>();
         var catalogoNoturnoService = scope.ServiceProvider.GetRequiredService<CatalogoNoturnoSyncService>();
 
         var accessToken = await tokenService.ObterTokenValido();
+
+        await cadastroProdutoService.ProcessarPendentes(accessToken, stoppingToken);
 
         if (DeveExecutarEstoque())
         {
