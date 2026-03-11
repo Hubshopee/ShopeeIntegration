@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using ShopeeIntegration.Domain.Entities;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -51,9 +52,14 @@ public class ShopeeAuthService
         request.Version = new Version(1, 1);
         request.VersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
         request.Headers.ExpectContinue = false;
+        request.Headers.TryAddWithoutValidation("Accept", "*/*");
+        request.Headers.TryAddWithoutValidation("User-Agent", "curl/8.0.0");
 
         var response = await _http.SendAsync(request);
         var body = await response.Content.ReadAsStringAsync();
+
+        if ((int)response.StatusCode == 405)
+            return await EnviarComCurl(url, json, operacao);
 
         if (!response.IsSuccessStatusCode)
             throw new Exception($"Shopee {operacao} falhou. URL: {url}. Status: {(int)response.StatusCode}. Resposta: {body}");
@@ -79,6 +85,41 @@ public class ShopeeAuthService
         var token = responseNode.Deserialize<TokenResponse>();
 
         return token ?? throw new Exception($"Nao foi possivel interpretar a resposta da Shopee ao executar {operacao}. Body: {body}");
+    }
+
+    private static async Task<TokenResponse> EnviarComCurl(string url, string json, string operacao)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "curl.exe",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        startInfo.ArgumentList.Add("-sS");
+        startInfo.ArgumentList.Add("-k");
+        startInfo.ArgumentList.Add("-X");
+        startInfo.ArgumentList.Add("POST");
+        startInfo.ArgumentList.Add(url);
+        startInfo.ArgumentList.Add("-H");
+        startInfo.ArgumentList.Add("Content-Type: application/json");
+        startInfo.ArgumentList.Add("-d");
+        startInfo.ArgumentList.Add(json);
+
+        using var process = Process.Start(startInfo)
+            ?? throw new Exception("Nao foi possivel iniciar curl.exe para refresh token.");
+
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stderr = await process.StandardError.ReadToEndAsync();
+
+        await process.WaitForExitAsync();
+
+        if (process.ExitCode != 0)
+            throw new Exception($"Shopee {operacao} falhou via curl. ExitCode: {process.ExitCode}. Erro: {stderr}");
+
+        return ExtrairTokenResponse(stdout, operacao);
     }
 
     private sealed class RefreshTokenRequest
