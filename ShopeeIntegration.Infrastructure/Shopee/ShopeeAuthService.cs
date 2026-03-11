@@ -2,7 +2,6 @@ using Microsoft.Extensions.Options;
 using ShopeeIntegration.Domain.Entities;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
 
 namespace ShopeeIntegration.Infrastructure.Shopee;
@@ -16,21 +15,6 @@ public class ShopeeAuthService
     {
         _http = http;
         _config = config.Value;
-    }
-
-    public async Task<TokenResponse> GetAccessToken(string code, int partnerId, string partnerKey, int shopId)
-    {
-        var path = "/api/v2/auth/token/get";
-        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var sign = ShopeeSigner.Generate(partnerKey, $"{partnerId}{path}{timestamp}");
-        var payload = new TokenGetRequest
-        {
-            PartnerId = partnerId,
-            ShopId = shopId,
-            Code = code
-        };
-
-        return await EnviarRequisicaoAuth(path, partnerId, timestamp, sign, payload, "token get");
     }
 
     public async Task<TokenResponse> RefreshToken(string refreshToken, int partnerId, string partnerKey, int shopId)
@@ -97,27 +81,15 @@ public class ShopeeAuthService
         return token ?? throw new Exception($"Nao foi possivel interpretar a resposta da Shopee ao executar {operacao}. Body: {body}");
     }
 
-    private sealed class TokenGetRequest
-    {
-        [JsonPropertyName("partner_id")]
-        public int PartnerId { get; init; }
-
-        [JsonPropertyName("shop_id")]
-        public int ShopId { get; init; }
-
-        [JsonPropertyName("code")]
-        public string Code { get; init; } = "";
-    }
-
     private sealed class RefreshTokenRequest
     {
-        [JsonPropertyName("partner_id")]
+        [System.Text.Json.Serialization.JsonPropertyName("partner_id")]
         public int PartnerId { get; init; }
 
-        [JsonPropertyName("shop_id")]
+        [System.Text.Json.Serialization.JsonPropertyName("shop_id")]
         public int ShopId { get; init; }
 
-        [JsonPropertyName("refresh_token")]
+        [System.Text.Json.Serialization.JsonPropertyName("refresh_token")]
         public string RefreshToken { get; init; } = "";
     }
 }

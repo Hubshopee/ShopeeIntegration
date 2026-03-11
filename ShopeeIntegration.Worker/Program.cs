@@ -22,16 +22,6 @@ builder.Services.AddDbContext<IntegrationDbContext>(options =>
         sql.EnableRetryOnFailure(5, TimeSpan.FromSeconds(10), null);
     }));
 
-builder.Services.AddHttpClient<ShopeeClient>((service, client) =>
-{
-    var config = service.GetRequiredService<IOptions<ShopeeConfig>>().Value;
-    client.BaseAddress = new Uri(config.BaseUrl);
-})
-.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-{
-    ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-});
-
 builder.Services.AddHttpClient<ShopeeAuthService>()
 .ConfigureHttpClient((service, client) =>
 {
@@ -42,9 +32,6 @@ builder.Services.AddHttpClient<ShopeeAuthService>()
 {
     ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
 });
-
-builder.Services.AddSingleton<ShopeeRequestLimiter>();
-builder.Services.AddSingleton<TokenService>();
 
 builder.Services.AddScoped<TokenSyncService>();
 builder.Services.AddScoped<EstoqueSyncService>();
