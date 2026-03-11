@@ -1,14 +1,14 @@
 using Microsoft.EntityFrameworkCore;
-using ShopeeIntegration.Domain.Entities;
-using ShopeeIntegration.Infrastructure.Persistence;
+using Domain.Entities;
+using Infrastructure.Persistence;
 
-namespace ShopeeIntegration.Application.Services;
+namespace Application.Services;
 
-public class PrecoSyncService
+public class DadosSyncService
 {
     private readonly IntegrationDbContext _db;
 
-    public PrecoSyncService(IntegrationDbContext db)
+    public DadosSyncService(IntegrationDbContext db)
     {
         _db = db;
     }
@@ -20,8 +20,8 @@ public class PrecoSyncService
             .FirstAsync();
 
         return await _db.Produtos
-            .Where(x => x.DataPreco != null && x.DataPreco > sync.SincDtPreco)
-            .OrderBy(x => x.DataPreco)
+            .Where(x => x.DataDados != null && x.DataDados > sync.SincDtPreco)
+            .OrderBy(x => x.DataDados)
             .ToListAsync();
     }
 }

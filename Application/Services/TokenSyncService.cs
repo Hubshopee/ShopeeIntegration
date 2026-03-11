@@ -1,9 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using ShopeeIntegration.Infrastructure.Persistence;
-using ShopeeIntegration.Infrastructure.Shopee;
+using Infrastructure.Persistence;
+using Infrastructure.Shopee;
 
-namespace ShopeeIntegration.Application.Services;
+namespace Application.Services;
 
 public class TokenSyncService
 {

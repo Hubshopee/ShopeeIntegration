@@ -1,15 +1,15 @@
 using Microsoft.Extensions.DependencyInjection;
-using ShopeeIntegration.Application.Services;
-using ShopeeIntegration.Infrastructure.Persistence;
+using Application.Services;
+using Infrastructure.Persistence;
 
-namespace ShopeeIntegration.Worker;
+namespace Worker;
 
-public class Worker : BackgroundService
+public class SyncWorker : BackgroundService
 {
-    private readonly ILogger<Worker> _logger;
+    private readonly ILogger<SyncWorker> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
 
-    public Worker(ILogger<Worker> logger, IServiceScopeFactory scopeFactory)
+    public SyncWorker(ILogger<SyncWorker> logger, IServiceScopeFactory scopeFactory)
     {
         _logger = logger;
         _scopeFactory = scopeFactory;
@@ -30,7 +30,7 @@ public class Worker : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro na execução das rotinas");
+                _logger.LogError(ex, "Erro na execuÃ§Ã£o das rotinas");
             }
 
             await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
@@ -52,7 +52,7 @@ public class Worker : BackgroundService
                 return false;
             }
 
-            _logger.LogInformation("Conexão com SQL Server OK");
+            _logger.LogInformation("ConexÃ£o com SQL Server OK");
             return true;
         }
         catch
@@ -90,10 +90,10 @@ public class Worker : BackgroundService
             var produtosPreco = await precoService.BuscarPendentes();
             var produtosDados = await dadosService.BuscarPendentes();
 
-            _logger.LogInformation("Preço pendente: {total}", produtosPreco.Count);
+            _logger.LogInformation("PreÃ§o pendente: {total}", produtosPreco.Count);
             _logger.LogInformation("Dados pendente: {total}", produtosDados.Count);
 
-            // enviar preço e dados com accessToken aqui
+            // enviar preÃ§o e dados com accessToken aqui
 
             if (produtosPreco.Any() || produtosDados.Any())
                 await catalogoNoturnoService.AtualizarCheckpoint(produtosPreco, produtosDados);

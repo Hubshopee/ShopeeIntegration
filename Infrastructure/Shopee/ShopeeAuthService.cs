@@ -1,11 +1,11 @@
 using Microsoft.Extensions.Options;
-using ShopeeIntegration.Domain.Entities;
+using Domain.Entities;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace ShopeeIntegration.Infrastructure.Shopee;
+namespace Infrastructure.Shopee;
 
 public class ShopeeAuthService
 {

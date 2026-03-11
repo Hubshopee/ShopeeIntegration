@@ -1,4 +1,4 @@
-namespace ShopeeIntegration.Infrastructure.Shopee;
+namespace Infrastructure.Shopee;
 
 public class ShopeeConfig
 {

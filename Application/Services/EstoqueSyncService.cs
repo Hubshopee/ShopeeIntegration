@@ -1,8 +1,8 @@
 using Microsoft.EntityFrameworkCore;
-using ShopeeIntegration.Domain.Entities;
-using ShopeeIntegration.Infrastructure.Persistence;
+using Domain.Entities;
+using Infrastructure.Persistence;
 
-namespace ShopeeIntegration.Application.Services;
+namespace Application.Services;
 
 public class EstoqueSyncService
 {

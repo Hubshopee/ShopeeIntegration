@@ -1,4 +1,4 @@
-namespace ShopeeIntegration.Domain;
+namespace Domain;
 
 public class TokenStore
 {

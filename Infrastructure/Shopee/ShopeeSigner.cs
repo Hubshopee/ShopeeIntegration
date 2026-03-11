@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace ShopeeIntegration.Infrastructure.Shopee;
+namespace Infrastructure.Shopee;
 
 public static class ShopeeSigner
 {

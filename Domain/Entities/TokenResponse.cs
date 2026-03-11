@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace ShopeeIntegration.Domain.Entities;
+namespace Domain.Entities;
 
 public class TokenResponse
 {

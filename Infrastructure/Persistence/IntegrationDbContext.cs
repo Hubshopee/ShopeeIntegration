@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
-using ShopeeIntegration.Domain.Entities;
+using Domain.Entities;
 
-namespace ShopeeIntegration.Infrastructure.Persistence;
+namespace Infrastructure.Persistence;
 
 public class IntegrationDbContext : DbContext
 {

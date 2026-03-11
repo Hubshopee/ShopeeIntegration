@@ -1,9 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using ShopeeIntegration.Application.Services;
-using ShopeeIntegration.Infrastructure.Persistence;
-using ShopeeIntegration.Infrastructure.Shopee;
-using ShopeeIntegration.Worker;
+using Application.Services;
+using Infrastructure.Persistence;
+using Infrastructure.Shopee;
+using Worker;
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -14,7 +14,7 @@ builder.Services.Configure<ShopeeConfig>(
 var connection = builder.Configuration.GetConnectionString("SqlServer");
 
 if (string.IsNullOrWhiteSpace(connection))
-    throw new Exception("A connection string 'SqlServer' não foi encontrada no appsettings.json.");
+    throw new Exception("A connection string 'SqlServer' nÃ£o foi encontrada no appsettings.json.");
 
 builder.Services.AddDbContext<IntegrationDbContext>(options =>
     options.UseSqlServer(connection, sql =>
@@ -39,7 +39,7 @@ builder.Services.AddScoped<PrecoSyncService>();
 builder.Services.AddScoped<DadosSyncService>();
 builder.Services.AddScoped<CatalogoNoturnoSyncService>();
 
-builder.Services.AddHostedService<Worker>();
+builder.Services.AddHostedService<SyncWorker>();
 
 var host = builder.Build();
 host.Run();

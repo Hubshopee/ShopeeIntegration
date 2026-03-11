@@ -1,4 +1,4 @@
-namespace ShopeeIntegration.Domain.Entities;
+namespace Domain.Entities;
 
 public class Produto
 {
