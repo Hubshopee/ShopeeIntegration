@@ -1,37 +1,43 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
+using ShopeeIntegration.Domain.Entities;
 using ShopeeIntegration.Infrastructure.Persistence;
 
 namespace ShopeeIntegration.Application.Services;
 
-public class TokenSyncService
+public class EstoqueSyncService
 {
     private readonly IntegrationDbContext _db;
-    private readonly ILogger<TokenSyncService> _logger;
 
-    public TokenSyncService(
-        IntegrationDbContext db,
-        ILogger<TokenSyncService> logger)
+    public EstoqueSyncService(IntegrationDbContext db)
     {
         _db = db;
-        _logger = logger;
     }
 
-    public async Task<string> ObterTokenValido()
+    public async Task<List<Produto>> BuscarPendentes()
     {
         var sync = await _db.SyncShopee
             .OrderBy(x => x.Id)
             .FirstAsync();
 
-        if (string.IsNullOrWhiteSpace(sync.SincAccessToken))
-            throw new Exception("SINCACCESSTOKEN não está preenchido na SINCSHOPEE.");
+        return await _db.Produtos
+            .Where(x => x.DataEstoque != null && x.DataEstoque > sync.SincDtEst)
+            .OrderBy(x => x.DataEstoque)
+            .ToListAsync();
+    }
 
-        _logger.LogInformation(
-            "Usando access token salvo no banco. PartnerId:{partnerId} ShopId:{shopId}",
-            sync.PartnerId,
-            sync.ShopId
-        );
+    public async Task AtualizarCheckpoint(List<Produto> produtos)
+    {
+        var ultimaData = produtos.Max(x => x.DataEstoque);
 
-        return sync.SincAccessToken;
+        if (!ultimaData.HasValue)
+            return;
+
+        var sync = await _db.SyncShopee
+            .OrderBy(x => x.Id)
+            .FirstAsync();
+
+        sync.SincDtEst = ultimaData.Value;
+
+        await _db.SaveChangesAsync();
     }
 }

@@ -33,6 +33,11 @@ builder.Services.AddHttpClient<ShopeeClient>((service, client) =>
 });
 
 builder.Services.AddHttpClient<ShopeeAuthService>()
+.ConfigureHttpClient((service, client) =>
+{
+    var config = service.GetRequiredService<IOptions<ShopeeConfig>>().Value;
+    client.BaseAddress = new Uri(config.BaseUrl);
+})
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
 {
     ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator

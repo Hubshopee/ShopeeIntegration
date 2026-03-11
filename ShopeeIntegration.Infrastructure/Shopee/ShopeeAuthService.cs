@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Options;
 using ShopeeIntegration.Domain.Entities;
-using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 
 namespace ShopeeIntegration.Infrastructure.Shopee;
 
@@ -16,59 +18,106 @@ public class ShopeeAuthService
         _config = config.Value;
     }
 
-    public async Task<TokenResponse> GetAccessToken(string code, int shopId)
+    public async Task<TokenResponse> GetAccessToken(string code, int partnerId, string partnerKey, int shopId)
     {
         var path = "/api/v2/auth/token/get";
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var sign = ShopeeSigner.Generate(_config.PartnerKey, $"{_config.PartnerId}{path}{timestamp}");
-
-        var url =
-            $"{_config.BaseUrl}{path}" +
-            $"?partner_id={_config.PartnerId}" +
-            $"&timestamp={timestamp}" +
-            $"&sign={sign}";
-
-        var response = await _http.PostAsJsonAsync(url, new
+        var sign = ShopeeSigner.Generate(partnerKey, $"{partnerId}{path}{timestamp}");
+        var payload = new TokenGetRequest
         {
-            code,
-            shop_id = shopId,
-            partner_id = _config.PartnerId
-        });
+            PartnerId = partnerId,
+            ShopId = shopId,
+            Code = code
+        };
 
-        var body = await response.Content.ReadAsStringAsync();
-
-        if (!response.IsSuccessStatusCode)
-            throw new Exception($"Shopee token get falhou. Status: {(int)response.StatusCode}. Resposta: {body}");
-
-        return JsonSerializer.Deserialize<TokenResponse>(body)
-            ?? throw new Exception("A resposta da Shopee veio vazia ao obter access token.");
+        return await EnviarRequisicaoAuth(path, partnerId, timestamp, sign, payload, "token get");
     }
 
-    public async Task<TokenResponse> RefreshToken(string refreshToken, int shopId)
+    public async Task<TokenResponse> RefreshToken(string refreshToken, int partnerId, string partnerKey, int shopId)
     {
         var path = "/api/v2/auth/access_token/get";
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var sign = ShopeeSigner.Generate(_config.PartnerKey, $"{_config.PartnerId}{path}{timestamp}");
-
-        var url =
-            $"{_config.RefreshBaseUrl}{path}" +
-            $"?partner_id={_config.PartnerId}" +
-            $"&timestamp={timestamp}" +
-            $"&sign={sign}";
-
-        var response = await _http.PostAsJsonAsync(url, new
+        var sign = ShopeeSigner.Generate(partnerKey, $"{partnerId}{path}{timestamp}");
+        var payload = new RefreshTokenRequest
         {
-            refresh_token = refreshToken,
-            shop_id = shopId,
-            partner_id = _config.PartnerId
-        });
+            PartnerId = partnerId,
+            ShopId = shopId,
+            RefreshToken = refreshToken
+        };
 
+        return await EnviarRequisicaoAuth(path, partnerId, timestamp, sign, payload, "refresh token");
+    }
+
+    private async Task<TokenResponse> EnviarRequisicaoAuth(
+        string path,
+        int partnerId,
+        long timestamp,
+        string sign,
+        object payload,
+        string operacao)
+    {
+        var url = MontarUrl(path, partnerId, timestamp, sign);
+        var json = JsonSerializer.Serialize(payload);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+
+        request.Version = new Version(1, 1);
+        request.VersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
+        request.Headers.ExpectContinue = false;
+
+        var response = await _http.SendAsync(request);
         var body = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
-            throw new Exception($"Shopee refresh token falhou. Status: {(int)response.StatusCode}. Resposta: {body}");
+            throw new Exception($"Shopee {operacao} falhou. URL: {url}. Status: {(int)response.StatusCode}. Resposta: {body}");
 
-        return JsonSerializer.Deserialize<TokenResponse>(body)
-            ?? throw new Exception("A resposta da Shopee veio vazia ao renovar token.");
+        return ExtrairTokenResponse(body, operacao);
+    }
+
+    private string MontarUrl(string path, int partnerId, long timestamp, string sign)
+    {
+        return
+            $"{_config.BaseUrl.TrimEnd('/')}{path}" +
+            $"?partner_id={partnerId}" +
+            $"&timestamp={timestamp}" +
+            $"&sign={sign}";
+    }
+
+    private static TokenResponse ExtrairTokenResponse(string body, string operacao)
+    {
+        var root = JsonNode.Parse(body)
+            ?? throw new Exception($"A resposta da Shopee veio vazia ao executar {operacao}.");
+
+        var responseNode = root["response"] ?? root;
+        var token = responseNode.Deserialize<TokenResponse>();
+
+        return token ?? throw new Exception($"Nao foi possivel interpretar a resposta da Shopee ao executar {operacao}. Body: {body}");
+    }
+
+    private sealed class TokenGetRequest
+    {
+        [JsonPropertyName("partner_id")]
+        public int PartnerId { get; init; }
+
+        [JsonPropertyName("shop_id")]
+        public int ShopId { get; init; }
+
+        [JsonPropertyName("code")]
+        public string Code { get; init; } = "";
+    }
+
+    private sealed class RefreshTokenRequest
+    {
+        [JsonPropertyName("partner_id")]
+        public int PartnerId { get; init; }
+
+        [JsonPropertyName("shop_id")]
+        public int ShopId { get; init; }
+
+        [JsonPropertyName("refresh_token")]
+        public string RefreshToken { get; init; } = "";
     }
 }

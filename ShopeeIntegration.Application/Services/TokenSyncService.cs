@@ -35,7 +35,7 @@ public class TokenSyncService
         );
 
         if (string.IsNullOrWhiteSpace(sync.SincAccessToken))
-            throw new Exception("SINCACCESSTOKEN não está preenchido na SINCSHOPEE.");
+            throw new Exception("SINCACCESSTOKEN nao esta preenchido na SINCSHOPEE.");
 
         if (!sync.SincDtRefToken.HasValue)
         {
@@ -47,19 +47,30 @@ public class TokenSyncService
 
         if (sync.SincDtRefToken.Value > DateTime.Now.AddHours(-4))
         {
-            _logger.LogInformation("Token ainda válido, refresh não necessário");
+            _logger.LogInformation("Token ainda valido, refresh nao necessario");
             return sync.SincAccessToken;
         }
 
         if (string.IsNullOrWhiteSpace(sync.SincRefreshToken))
-            throw new Exception("SINCREFRESHTOKEN não está preenchido na SINCSHOPEE.");
+            throw new Exception("SINCREFRESHTOKEN nao esta preenchido na SINCSHOPEE.");
+
+        if (!sync.PartnerId.HasValue)
+            throw new Exception("PARTNERID nao esta preenchido na SINCSHOPEE.");
+
+        if (string.IsNullOrWhiteSpace(sync.ClientSecret))
+            throw new Exception("CLIENTSECRET nao esta preenchido na SINCSHOPEE.");
 
         if (!sync.ShopId.HasValue)
-            throw new Exception("SHOPID não está preenchido na SINCSHOPEE.");
+            throw new Exception("SHOPID nao esta preenchido na SINCSHOPEE.");
 
         _logger.LogInformation("Iniciando refresh do token");
 
-        var token = await _auth.RefreshToken(sync.SincRefreshToken, sync.ShopId.Value);
+        var token = await _auth.RefreshToken(
+            sync.SincRefreshToken,
+            sync.PartnerId.Value,
+            sync.ClientSecret,
+            sync.ShopId.Value
+        );
 
         sync.SincAccessToken = token.AccessToken;
         sync.SincRefreshToken = token.RefreshToken;
