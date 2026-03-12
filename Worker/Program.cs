@@ -10,6 +10,9 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Services.Configure<ShopeeConfig>(
     builder.Configuration.GetSection("Shopee")
 );
+builder.Services.Configure<SyncScheduleOptions>(
+    builder.Configuration.GetSection("SyncSchedule")
+);
 
 var connection = builder.Configuration.GetConnectionString("SqlServer");
 

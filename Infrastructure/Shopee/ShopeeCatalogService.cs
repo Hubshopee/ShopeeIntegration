@@ -80,6 +80,215 @@ public class ShopeeCatalogService
         }
     }
 
+    public async Task UpdateStock(
+        string accessToken,
+        int partnerId,
+        string partnerKey,
+        int shopId,
+        ShopeeUpdateStockRequest item,
+        CancellationToken cancellationToken)
+    {
+        var payloads = new object[]
+        {
+            item,
+            new
+            {
+                item_id = item.ItemId,
+                stock_list = new[]
+                {
+                    new
+                    {
+                        seller_stock = item.SellerStock.Select(x => new
+                        {
+                            location_id = x.LocationId,
+                            stock = x.Stock
+                        }).ToArray()
+                    }
+                }
+            },
+            new
+            {
+                item_id = item.ItemId,
+                stock_list = new[]
+                {
+                    new
+                    {
+                        normal_stock = item.Stock
+                    }
+                }
+            },
+            new
+            {
+                item_id = item.ItemId,
+                stock_list = new[]
+                {
+                    new
+                    {
+                        model_id = 0,
+                        seller_stock = item.SellerStock.Select(x => new
+                        {
+                            location_id = x.LocationId,
+                            stock = x.Stock
+                        }).ToArray()
+                    }
+                }
+            },
+            new
+            {
+                item_id = item.ItemId,
+                stock_list = new[]
+                {
+                    new
+                    {
+                        model_id = 0,
+                        normal_stock = item.Stock
+                    }
+                }
+            }
+        };
+
+        Exception? lastError = null;
+
+        foreach (var payload in payloads)
+        {
+            try
+            {
+                await SendJsonRequest(
+                    "/api/v2/product/update_stock",
+                    accessToken,
+                    partnerId,
+                    partnerKey,
+                    shopId,
+                    payload,
+                    "update stock",
+                    cancellationToken
+                );
+                return;
+            }
+            catch (Exception ex) when (
+                ex.Message.Contains("update stock", StringComparison.OrdinalIgnoreCase)
+                || ex.Message.Contains("failure_list", StringComparison.OrdinalIgnoreCase)
+                || ex.Message.Contains("success_list", StringComparison.OrdinalIgnoreCase))
+            {
+                lastError = ex;
+            }
+        }
+
+        if (lastError is not null)
+            throw lastError;
+
+        throw new Exception("Shopee update stock falhou sem retorno detalhado.");
+    }
+
+    public async Task UpdatePrice(
+        string accessToken,
+        int partnerId,
+        string partnerKey,
+        int shopId,
+        ShopeeUpdatePriceRequest item,
+        CancellationToken cancellationToken)
+    {
+        var payloads = new object[]
+        {
+            item,
+            new
+            {
+                item_id = item.ItemId,
+                price_list = new[]
+                {
+                    new
+                    {
+                        original_price = item.OriginalPrice
+                    }
+                }
+            },
+            new
+            {
+                item_id = item.ItemId,
+                price_list = new[]
+                {
+                    new
+                    {
+                        model_id = 0,
+                        original_price = item.OriginalPrice
+                    }
+                }
+            },
+            new
+            {
+                item_id = item.ItemId,
+                price_info = new[]
+                {
+                    new
+                    {
+                        original_price = item.OriginalPrice
+                    }
+                }
+            },
+            new
+            {
+                item_id = item.ItemId,
+                price_info = new[]
+                {
+                    new
+                    {
+                        model_id = 0,
+                        original_price = item.OriginalPrice
+                    }
+                }
+            }
+        };
+
+        Exception? lastError = null;
+
+        foreach (var payload in payloads)
+        {
+            try
+            {
+                await SendJsonRequest(
+                    "/api/v2/product/update_price",
+                    accessToken,
+                    partnerId,
+                    partnerKey,
+                    shopId,
+                    payload,
+                    "update price",
+                    cancellationToken
+                );
+                return;
+            }
+            catch (Exception ex) when (ex.Message.Contains("product.error_update_price_fail", StringComparison.OrdinalIgnoreCase))
+            {
+                lastError = ex;
+            }
+        }
+
+        if (lastError is not null)
+            throw lastError;
+
+        throw new Exception("Shopee update price falhou sem retorno detalhado.");
+    }
+
+    public async Task UpdateItem(
+        string accessToken,
+        int partnerId,
+        string partnerKey,
+        int shopId,
+        ShopeeUpdateItemRequest item,
+        CancellationToken cancellationToken)
+    {
+        await SendJsonRequest(
+            "/api/v2/product/update_item",
+            accessToken,
+            partnerId,
+            partnerKey,
+            shopId,
+            item,
+            "update item",
+            cancellationToken
+        );
+    }
+
     public async Task<long> ResolveLogisticsChannelId(
         string accessToken,
         int partnerId,
@@ -176,6 +385,47 @@ public class ShopeeCatalogService
             throw new Exception($"Shopee nao retornou image_id no upload. Body: {body}");
 
         return imageId;
+    }
+
+    private async Task SendJsonRequest(
+        string path,
+        string accessToken,
+        int partnerId,
+        string partnerKey,
+        int shopId,
+        object payloadObject,
+        string operation,
+        CancellationToken cancellationToken)
+    {
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var sign = ShopeeSigner.Generate(partnerKey, $"{partnerId}{path}{timestamp}{accessToken}{shopId}");
+        var url = BuildSignedUrl(path, partnerId, timestamp, sign, accessToken, shopId);
+        var payload = JsonSerializer.Serialize(payloadObject, JsonOptions);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            Version = new Version(1, 1),
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+        };
+
+        request.Headers.ExpectContinue = false;
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+        request.Headers.TryAddWithoutValidation("User-Agent", "curl/8.0.0");
+
+        var response = await _http.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if ((int)response.StatusCode == 405)
+        {
+            body = await SendPostWithCurl(url, payload, operation, cancellationToken);
+        }
+        else if (!response.IsSuccessStatusCode)
+        {
+            throw new Exception($"Shopee {operation} falhou. Payload: {payload}. Resposta: {body}");
+        }
+
+        ValidarRespostaGenerica(body, operation, payload);
     }
 
     private async Task<IReadOnlyList<ShopeeLogisticsChannel>> GetLogisticsChannels(
@@ -321,6 +571,23 @@ public class ShopeeCatalogService
         return itemId.Value;
     }
 
+    private static void ValidarRespostaGenerica(string body, string operation, string payload)
+    {
+        var root = JsonNode.Parse(body) ?? throw new Exception($"Resposta vazia ao executar {operation}.");
+        var error = TryGetString(root["error"]);
+        var successList = root["response"]?["success_list"]?.AsArray();
+        var failureList = root["response"]?["failure_list"]?.AsArray();
+
+        if (!string.IsNullOrWhiteSpace(error))
+            throw new Exception($"Shopee {operation} rejeitou o payload. Payload: {payload}. Body: {body}");
+
+        if (failureList is not null && failureList.Count > 0)
+            throw new Exception($"Shopee {operation} retornou failure_list. Payload: {payload}. Body: {body}");
+
+        if (successList is not null && failureList is not null && successList.Count == 0)
+            throw new Exception($"Shopee {operation} nao confirmou sucesso no success_list. Payload: {payload}. Body: {body}");
+    }
+
     private static long? TryGetLong(JsonNode? node)
     {
         if (node is null)
@@ -445,6 +712,49 @@ public class ShopeeCatalogService
         }
     }
 
+    private static async Task<string> SendPostWithCurl(
+        string url,
+        string payload,
+        string operation,
+        CancellationToken cancellationToken)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "curl.exe",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        startInfo.ArgumentList.Add("-sS");
+        startInfo.ArgumentList.Add("-k");
+        startInfo.ArgumentList.Add("-X");
+        startInfo.ArgumentList.Add("POST");
+        startInfo.ArgumentList.Add(url);
+        startInfo.ArgumentList.Add("-H");
+        startInfo.ArgumentList.Add("Accept: */*");
+        startInfo.ArgumentList.Add("-H");
+        startInfo.ArgumentList.Add("Content-Type: application/json");
+        startInfo.ArgumentList.Add("-A");
+        startInfo.ArgumentList.Add("curl/8.0.0");
+        startInfo.ArgumentList.Add("-d");
+        startInfo.ArgumentList.Add(payload);
+
+        using var process = Process.Start(startInfo)
+            ?? throw new Exception($"Nao foi possivel iniciar curl.exe para {operation}.");
+
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stderr = await process.StandardError.ReadToEndAsync();
+
+        await process.WaitForExitAsync(cancellationToken);
+
+        if (process.ExitCode != 0)
+            throw new Exception($"Shopee {operation} falhou via curl. Payload: {payload}. ExitCode: {process.ExitCode}. Erro: {stderr}");
+
+        return stdout;
+    }
+
     private static async Task<string> SendGetWithCurl(
         string url,
         string operation,
@@ -513,6 +823,9 @@ public class ShopeeCreateItemRequest
     [JsonPropertyName("item_sku")]
     public string? ItemSku { get; set; }
 
+    [JsonPropertyName("gtin_code")]
+    public string? GtinCode { get; set; }
+
     [JsonPropertyName("category_id")]
     public long CategoryId { get; set; }
 
@@ -568,7 +881,10 @@ public class ShopeeDimensionRequest
 public class ShopeeBrandRequest
 {
     [JsonPropertyName("brand_id")]
-    public long BrandId { get; set; }
+    public long? BrandId { get; set; }
+
+    [JsonPropertyName("original_brand_name")]
+    public string? OriginalBrandName { get; set; }
 }
 
 public class ShopeeLogisticInfoRequest
@@ -626,4 +942,58 @@ public class ShopeeAttributeValueRequest
 
     [JsonPropertyName("original_value_name")]
     public string? OriginalValueName { get; set; }
+}
+
+public class ShopeeUpdateStockRequest
+{
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
+
+    [JsonPropertyName("stock")]
+    public int Stock { get; set; }
+
+    [JsonPropertyName("seller_stock")]
+    public List<ShopeeSellerStockRequest> SellerStock { get; set; } = [];
+}
+
+public class ShopeeUpdatePriceRequest
+{
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
+
+    [JsonPropertyName("price")]
+    public decimal Price { get; set; }
+
+    [JsonPropertyName("original_price")]
+    public decimal OriginalPrice { get; set; }
+}
+
+public class ShopeeUpdateItemRequest
+{
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
+
+    [JsonPropertyName("item_name")]
+    public string ItemName { get; set; } = "";
+
+    [JsonPropertyName("description")]
+    public string Description { get; set; } = "";
+
+    [JsonPropertyName("item_sku")]
+    public string? ItemSku { get; set; }
+
+    [JsonPropertyName("gtin_code")]
+    public string? GtinCode { get; set; }
+
+    [JsonPropertyName("weight")]
+    public decimal Weight { get; set; }
+
+    [JsonPropertyName("dimension")]
+    public ShopeeDimensionRequest Dimension { get; set; } = new();
+
+    [JsonPropertyName("brand")]
+    public ShopeeBrandRequest? Brand { get; set; }
+
+    [JsonPropertyName("attribute_list")]
+    public List<ShopeeAttributeRequest> AttributeList { get; set; } = [];
 }

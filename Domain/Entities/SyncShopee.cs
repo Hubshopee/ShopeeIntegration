@@ -11,4 +11,5 @@ public class SyncShopee
     public int? ShopId { get; set; }
     public DateTime? SincDtEst { get; set; }
     public DateTime? SincDtPreco { get; set; }
+    public DateTime? SincDtDados { get; set; }
 }

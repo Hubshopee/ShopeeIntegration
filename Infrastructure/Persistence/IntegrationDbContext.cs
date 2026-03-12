@@ -105,6 +105,7 @@ public class IntegrationDbContext : DbContext
             entity.Property(x => x.ShopId).HasColumnName("SHOPID");
             entity.Property(x => x.SincDtEst).HasColumnName("SINCDTEST");
             entity.Property(x => x.SincDtPreco).HasColumnName("SINCDTPRECO");
+            entity.Property(x => x.SincDtDados).HasColumnName("SINCDTDADOS");
         });
     }
 }

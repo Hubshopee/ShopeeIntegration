@@ -24,7 +24,9 @@ public class CadastroProdutoService
         _logger = logger;
     }
 
-    public async Task ProcessarPendentes(string accessToken, CancellationToken cancellationToken)
+    public async Task<int> ProcessarPendentes(
+        string accessToken,
+        CancellationToken cancellationToken)
     {
         var sync = await _db.SyncShopee
             .OrderBy(x => x.Id)
@@ -47,7 +49,7 @@ public class CadastroProdutoService
         _logger.LogInformation("Cadastro pendente: {total}", produtos.Count);
 
         if (produtos.Count == 0)
-            return;
+            return 0;
 
         var codigos = produtos
             .Where(x => x.Codigo.HasValue)
@@ -87,6 +89,52 @@ public class CadastroProdutoService
                 _logger.LogError(ex, "Erro ao cadastrar produto Codigo:{codigo}", produto.Codigo);
             }
         }
+
+        return produtos.Count;
+    }
+
+    public async Task<List<Produto>> BuscarPendentes(CancellationToken cancellationToken)
+    {
+        return await _db.Produtos
+            .Where(x => x.DataInclusao == null)
+            .OrderBy(x => x.Id)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task ProcessarProduto(
+        int produtoId,
+        string accessToken,
+        int partnerId,
+        string partnerKey,
+        int shopId,
+        CancellationToken cancellationToken)
+    {
+        var produto = await _db.Produtos
+            .FirstAsync(x => x.Id == produtoId, cancellationToken);
+
+        var imagens = produto.Codigo.HasValue
+            ? await _db.ImagensFtp
+                .Where(x => x.ProdCod == produto.Codigo)
+                .ToListAsync(cancellationToken)
+            : [];
+
+        var atributos = produto.Codigo.HasValue
+            ? await _db.Atributos
+                .Where(x => x.ProdCod == produto.Codigo)
+                .OrderBy(x => x.Ordem)
+                .ToListAsync(cancellationToken)
+            : [];
+
+        await CadastrarProduto(
+            produto,
+            imagens,
+            atributos,
+            accessToken,
+            partnerId,
+            partnerKey,
+            shopId,
+            cancellationToken
+        );
     }
 
     private async Task CadastrarProduto(
@@ -155,6 +203,7 @@ public class CadastroProdutoService
             ItemName = titulo,
             Description = descricao,
             ItemSku = produto.Sku,
+            GtinCode = string.IsNullOrWhiteSpace(produto.Gtin) ? null : produto.Gtin.Trim(),
             CategoryId = produto.CategoriaId.Value,
             Weight = pesoKg,
             Dimension = new ShopeeDimensionRequest
@@ -192,7 +241,15 @@ public class CadastroProdutoService
         {
             request.Brand = new ShopeeBrandRequest
             {
-                BrandId = produto.MarcaId.Value
+                BrandId = produto.MarcaId.Value,
+                OriginalBrandName = string.IsNullOrWhiteSpace(produto.Fornecedor) ? null : produto.Fornecedor.Trim()
+            };
+        }
+        else if (!string.IsNullOrWhiteSpace(produto.Fornecedor))
+        {
+            request.Brand = new ShopeeBrandRequest
+            {
+                OriginalBrandName = produto.Fornecedor.Trim()
             };
         }
 
