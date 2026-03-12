@@ -15,6 +15,7 @@ public class SyncWorker : BackgroundService
     private static DateTime? _ultimaExecucaoExclusao;
     private static DateTime? _ultimaExecucaoDados;
     private static bool _cargaInicialExecutada;
+    private static readonly SemaphoreSlim _execucaoLock = new(1, 1);
 
     private readonly ILogger<SyncWorker> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
@@ -118,175 +119,191 @@ public class SyncWorker : BackgroundService
 
     private async Task ExecutarRotinas(CancellationToken stoppingToken)
     {
-        if (_options.ShowLoopLogs)
-            _logger.LogInformation("Iniciando ciclo do worker em {horario}", DateTime.Now);
-
-        using var scope = _scopeFactory.CreateScope();
-
-        var cadastroProdutoService = scope.ServiceProvider.GetRequiredService<CadastroProdutoService>();
-        var estoqueService = scope.ServiceProvider.GetRequiredService<EstoqueSyncService>();
-        var precoService = scope.ServiceProvider.GetRequiredService<PrecoSyncService>();
-        var exclusaoService = scope.ServiceProvider.GetRequiredService<ExclusaoSyncService>();
-        var dadosService = scope.ServiceProvider.GetRequiredService<DadosSyncService>();
-        var db = scope.ServiceProvider.GetRequiredService<IntegrationDbContext>();
-
-        var sync = await db.SyncShopee
-            .OrderBy(x => x.Id)
-            .FirstAsync(stoppingToken);
-
-        if (!sync.PartnerId.HasValue)
-            throw new Exception("PARTNERID nao esta preenchido na SINCSHOPEE.");
-
-        if (string.IsNullOrWhiteSpace(sync.ClientSecret))
-            throw new Exception("CLIENTSECRET nao esta preenchido na SINCSHOPEE.");
-
-        if (!sync.ShopId.HasValue)
-            throw new Exception("SHOPID nao esta preenchido na SINCSHOPEE.");
-
-        var executarCargaInicial = !_cargaInicialExecutada;
-
-        var filaCadastro = (executarCargaInicial || DeveExecutarCadastro())
-            ? (await cadastroProdutoService.BuscarPendentes(stoppingToken))
-                .Select(x => CriarItemFila(TipoFila.Cadastro, x))
-                .ToList()
-            : [];
-
-        var filaExclusao = (executarCargaInicial || DeveExecutarExclusao())
-            ? (await exclusaoService.BuscarPendentes(stoppingToken))
-                .Select(x => CriarItemFila(TipoFila.Exclusao, x))
-                .ToList()
-            : [];
-
-        var produtosEmExclusao = filaExclusao
-            .Select(x => x.ProdutoId)
-            .ToHashSet();
-
-        var filaEstoque = (executarCargaInicial || DeveExecutarEstoque())
-            ? (await estoqueService.BuscarPendentes(stoppingToken))
-                .Where(x => !produtosEmExclusao.Contains(x.Id))
-                .Select(x => CriarItemFila(TipoFila.Estoque, x))
-                .ToList()
-            : [];
-
-        var filaPreco = (executarCargaInicial || DeveExecutarPreco())
-            ? (await precoService.BuscarPendentes(stoppingToken))
-                .Where(x => !produtosEmExclusao.Contains(x.Id))
-                .Select(x => CriarItemFila(TipoFila.Preco, x))
-                .ToList()
-            : [];
-
-        var filaDados = (executarCargaInicial || DeveExecutarDados())
-            ? (await dadosService.BuscarPendentes(stoppingToken))
-                .Where(x => !produtosEmExclusao.Contains(x.Id))
-                .Select(x => CriarItemFila(TipoFila.Dados, x))
-                .ToList()
-            : [];
-
-        if (executarCargaInicial)
-        {
-            _logger.LogInformation(
-                "Carga inicial ativada: novos produtos, estoque, preco, exclusao e dados serao verificados agora antes de seguir a agenda configurada"
-            );
-        }
-
-        if (_options.ShowLoopLogs || filaCadastro.Count > 0 || filaEstoque.Count > 0 || filaPreco.Count > 0 || filaExclusao.Count > 0 || filaDados.Count > 0)
-        {
-            _logger.LogInformation(
-                "Filas carregadas: cadastro {cadastro}, estoque {estoque}, preco {preco}, exclusao {exclusao}, dados {dados}",
-                filaCadastro.Count,
-                filaEstoque.Count,
-                filaPreco.Count,
-                filaExclusao.Count,
-                filaDados.Count
-            );
-        }
-
-        var fila = MontarFilaRoundRobin(filaEstoque, filaPreco, filaExclusao, filaDados, filaCadastro);
-
-        if (fila.Count == 0)
+        if (!await _execucaoLock.WaitAsync(0, stoppingToken))
         {
             if (_options.ShowLoopLogs)
-                _logger.LogInformation("Nenhum item pendente neste ciclo");
+                _logger.LogInformation("Ciclo anterior ainda em andamento, novo loop ignorado");
+
             return;
         }
 
-        var resultados = await ProcessarFila(
-            fila,
-            sync.PartnerId.Value,
-            sync.ClientSecret,
-            sync.ShopId.Value,
-            stoppingToken
-        );
-        var marcoCargaInicial = executarCargaInicial ? DateTime.Now : (DateTime?)null;
+        if (_options.ShowLoopLogs)
+            _logger.LogInformation("Iniciando ciclo do worker em {horario}", DateTime.Now);
 
-        using var checkpointScope = _scopeFactory.CreateScope();
-        var estoqueCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<EstoqueSyncService>();
-        var precoCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<PrecoSyncService>();
-        var exclusaoCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<ExclusaoSyncService>();
-        var dadosCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<DadosSyncService>();
-
-        var estoqueProcessado = resultados.Where(x => x.Tipo == TipoFila.Estoque).ToList();
-        var precoProcessado = resultados.Where(x => x.Tipo == TipoFila.Preco).ToList();
-        var exclusoesProcessadas = resultados.Where(x => x.Tipo == TipoFila.Exclusao).ToList();
-        var dadosProcessados = resultados.Where(x => x.Tipo == TipoFila.Dados).ToList();
-
-        if (estoqueProcessado.Count > 0)
+        try
         {
-            await estoqueCheckpointService.AtualizarCheckpoint(
-                estoqueProcessado.Select(x => new Produto { DataEstoque = x.DataReferencia }).ToList(),
-                stoppingToken,
-                executarCargaInicial,
-                marcoCargaInicial
-            );
-            _ultimaExecucaoEstoque = DateTime.Now;
-        }
+            using var scope = _scopeFactory.CreateScope();
 
-        if (precoProcessado.Count > 0)
+            var cadastroProdutoService = scope.ServiceProvider.GetRequiredService<CadastroProdutoService>();
+            var estoqueService = scope.ServiceProvider.GetRequiredService<EstoqueSyncService>();
+            var precoService = scope.ServiceProvider.GetRequiredService<PrecoSyncService>();
+            var exclusaoService = scope.ServiceProvider.GetRequiredService<ExclusaoSyncService>();
+            var dadosService = scope.ServiceProvider.GetRequiredService<DadosSyncService>();
+            var db = scope.ServiceProvider.GetRequiredService<IntegrationDbContext>();
+
+            var sync = await db.SyncShopee
+                .OrderBy(x => x.Id)
+                .FirstAsync(stoppingToken);
+
+            if (!sync.PartnerId.HasValue)
+                throw new Exception("PARTNERID nao esta preenchido na SINCSHOPEE.");
+
+            if (string.IsNullOrWhiteSpace(sync.ClientSecret))
+                throw new Exception("CLIENTSECRET nao esta preenchido na SINCSHOPEE.");
+
+            if (!sync.ShopId.HasValue)
+                throw new Exception("SHOPID nao esta preenchido na SINCSHOPEE.");
+
+            var executarCargaInicial = !_cargaInicialExecutada;
+
+            var filaCadastro = (executarCargaInicial || DeveExecutarCadastro())
+                ? (await cadastroProdutoService.BuscarPendentes(stoppingToken))
+                    .Select(x => CriarItemFila(TipoFila.Cadastro, x))
+                    .ToList()
+                : [];
+
+            var filaExclusao = (executarCargaInicial || DeveExecutarExclusao())
+                ? (await exclusaoService.BuscarPendentes(stoppingToken))
+                    .Select(x => CriarItemFila(TipoFila.Exclusao, x))
+                    .ToList()
+                : [];
+
+            var produtosEmExclusao = filaExclusao
+                .Select(x => x.ProdutoId)
+                .ToHashSet();
+
+            var filaEstoque = (executarCargaInicial || DeveExecutarEstoque())
+                ? (await estoqueService.BuscarPendentes(stoppingToken))
+                    .Where(x => !produtosEmExclusao.Contains(x.Id))
+                    .Select(x => CriarItemFila(TipoFila.Estoque, x))
+                    .ToList()
+                : [];
+
+            var filaPreco = (executarCargaInicial || DeveExecutarPreco())
+                ? (await precoService.BuscarPendentes(stoppingToken))
+                    .Where(x => !produtosEmExclusao.Contains(x.Id))
+                    .Select(x => CriarItemFila(TipoFila.Preco, x))
+                    .ToList()
+                : [];
+
+            var filaDados = (executarCargaInicial || DeveExecutarDados())
+                ? (await dadosService.BuscarPendentes(stoppingToken))
+                    .Where(x => !produtosEmExclusao.Contains(x.Id))
+                    .Select(x => CriarItemFila(TipoFila.Dados, x))
+                    .ToList()
+                : [];
+
+            if (executarCargaInicial)
+            {
+                _logger.LogInformation(
+                    "Carga inicial ativada: novos produtos, estoque, preco, exclusao e dados serao verificados agora antes de seguir a agenda configurada"
+                );
+            }
+
+            if (_options.ShowLoopLogs || filaCadastro.Count > 0 || filaEstoque.Count > 0 || filaPreco.Count > 0 || filaExclusao.Count > 0 || filaDados.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Filas carregadas: cadastro {cadastro}, estoque {estoque}, preco {preco}, exclusao {exclusao}, dados {dados}",
+                    filaCadastro.Count,
+                    filaEstoque.Count,
+                    filaPreco.Count,
+                    filaExclusao.Count,
+                    filaDados.Count
+                );
+            }
+
+            var fila = MontarFilaRoundRobin(filaEstoque, filaPreco, filaExclusao, filaDados, filaCadastro);
+
+            if (fila.Count == 0)
+            {
+                if (_options.ShowLoopLogs)
+                    _logger.LogInformation("Nenhum item pendente neste ciclo");
+
+                return;
+            }
+
+            var resultados = await ProcessarFila(
+                fila,
+                sync.PartnerId.Value,
+                sync.ClientSecret,
+                sync.ShopId.Value,
+                stoppingToken
+            );
+            var marcoCargaInicial = executarCargaInicial ? DateTime.Now : (DateTime?)null;
+
+            using var checkpointScope = _scopeFactory.CreateScope();
+            var estoqueCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<EstoqueSyncService>();
+            var precoCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<PrecoSyncService>();
+            var exclusaoCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<ExclusaoSyncService>();
+            var dadosCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<DadosSyncService>();
+
+            var estoqueProcessado = resultados.Where(x => x.Tipo == TipoFila.Estoque).ToList();
+            var precoProcessado = resultados.Where(x => x.Tipo == TipoFila.Preco).ToList();
+            var exclusoesProcessadas = resultados.Where(x => x.Tipo == TipoFila.Exclusao).ToList();
+            var dadosProcessados = resultados.Where(x => x.Tipo == TipoFila.Dados).ToList();
+
+            if (estoqueProcessado.Count > 0)
+            {
+                await estoqueCheckpointService.AtualizarCheckpoint(
+                    estoqueProcessado.Select(x => new Produto { DataEstoque = x.DataReferencia }).ToList(),
+                    stoppingToken,
+                    executarCargaInicial,
+                    marcoCargaInicial
+                );
+                _ultimaExecucaoEstoque = DateTime.Now;
+            }
+
+            if (precoProcessado.Count > 0)
+            {
+                await precoCheckpointService.AtualizarCheckpoint(
+                    precoProcessado.Select(x => new Produto { DataPreco = x.DataReferencia }).ToList(),
+                    stoppingToken,
+                    executarCargaInicial,
+                    marcoCargaInicial
+                );
+                _ultimaExecucaoPreco = DateTime.Now;
+            }
+
+            if (exclusoesProcessadas.Count > 0)
+            {
+                await exclusaoCheckpointService.AtualizarCheckpoint(
+                    exclusoesProcessadas.Select(x => new Produto { DataExclusao = x.DataReferencia }).ToList(),
+                    stoppingToken,
+                    marcoCargaInicial
+                );
+                _ultimaExecucaoExclusao = DateTime.Now;
+            }
+
+            if (dadosProcessados.Count > 0)
+            {
+                await dadosCheckpointService.AtualizarCheckpoint(
+                    dadosProcessados.Select(x => new Produto { DataDados = x.DataReferencia }).ToList(),
+                    stoppingToken,
+                    executarCargaInicial,
+                    marcoCargaInicial
+                );
+                _ultimaExecucaoDados = DateTime.Now;
+            }
+
+            if (_options.ShowLoopLogs || resultados.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Processamento concluido: cadastro {cadastro}, estoque {estoque}, preco {preco}, exclusao {exclusao}, dados {dados}",
+                    resultados.Count(x => x.Tipo == TipoFila.Cadastro),
+                    estoqueProcessado.Count,
+                    precoProcessado.Count,
+                    exclusoesProcessadas.Count,
+                    dadosProcessados.Count
+                );
+            }
+
+            if (executarCargaInicial)
+                _cargaInicialExecutada = true;
+        }
+        finally
         {
-            await precoCheckpointService.AtualizarCheckpoint(
-                precoProcessado.Select(x => new Produto { DataPreco = x.DataReferencia }).ToList(),
-                stoppingToken,
-                executarCargaInicial,
-                marcoCargaInicial
-            );
-            _ultimaExecucaoPreco = DateTime.Now;
+            _execucaoLock.Release();
         }
-
-        if (exclusoesProcessadas.Count > 0)
-        {
-            await exclusaoCheckpointService.AtualizarCheckpoint(
-                exclusoesProcessadas.Select(x => new Produto { DataExclusao = x.DataReferencia }).ToList(),
-                stoppingToken,
-                marcoCargaInicial
-            );
-            _ultimaExecucaoExclusao = DateTime.Now;
-        }
-
-        if (dadosProcessados.Count > 0)
-        {
-            await dadosCheckpointService.AtualizarCheckpoint(
-                dadosProcessados.Select(x => new Produto { DataDados = x.DataReferencia }).ToList(),
-                stoppingToken,
-                executarCargaInicial,
-                marcoCargaInicial
-            );
-            _ultimaExecucaoDados = DateTime.Now;
-        }
-
-        if (_options.ShowLoopLogs || resultados.Count > 0)
-        {
-            _logger.LogInformation(
-                "Processamento concluido: cadastro {cadastro}, estoque {estoque}, preco {preco}, exclusao {exclusao}, dados {dados}",
-                resultados.Count(x => x.Tipo == TipoFila.Cadastro),
-                estoqueProcessado.Count,
-                precoProcessado.Count,
-                exclusoesProcessadas.Count,
-                dadosProcessados.Count
-            );
-        }
-
-        if (executarCargaInicial)
-            _cargaInicialExecutada = true;
     }
 
     private async Task<List<ResultadoFila>> ProcessarFila(

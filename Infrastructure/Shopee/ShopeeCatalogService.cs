@@ -412,6 +412,9 @@ public class ShopeeCatalogService
             var response = await _http.SendAsync(request, cancellationToken);
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
 
+            if ((int)response.StatusCode == 405)
+                return await UploadImageWithCurl(url, imageBytes, fileName, imageUrl, cancellationToken);
+
             if (!response.IsSuccessStatusCode)
                 throw new Exception($"Shopee upload image falhou. UrlImagem: {imageUrl}. Status: {(int)response.StatusCode}. Resposta: {body}");
 

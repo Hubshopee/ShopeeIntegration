@@ -112,29 +112,39 @@ public class CadastroProdutoService
         var produto = await _db.Produtos
             .FirstAsync(x => x.Id == produtoId, cancellationToken);
 
-        var imagens = produto.Codigo.HasValue
-            ? await _db.ImagensFtp
-                .Where(x => x.ProdCod == produto.Codigo)
-                .ToListAsync(cancellationToken)
-            : [];
+        try
+        {
+            var imagens = produto.Codigo.HasValue
+                ? await _db.ImagensFtp
+                    .Where(x => x.ProdCod == produto.Codigo)
+                    .ToListAsync(cancellationToken)
+                : [];
 
-        var atributos = produto.Codigo.HasValue
-            ? await _db.Atributos
-                .Where(x => x.ProdCod == produto.Codigo)
-                .OrderBy(x => x.Ordem)
-                .ToListAsync(cancellationToken)
-            : [];
+            var atributos = produto.Codigo.HasValue
+                ? await _db.Atributos
+                    .Where(x => x.ProdCod == produto.Codigo)
+                    .OrderBy(x => x.Ordem)
+                    .ToListAsync(cancellationToken)
+                : [];
 
-        await CadastrarProduto(
-            produto,
-            imagens,
-            atributos,
-            accessToken,
-            partnerId,
-            partnerKey,
-            shopId,
-            cancellationToken
-        );
+            await CadastrarProduto(
+                produto,
+                imagens,
+                atributos,
+                accessToken,
+                partnerId,
+                partnerKey,
+                shopId,
+                cancellationToken
+            );
+        }
+        catch (Exception ex)
+        {
+            produto.Status = "ERRO";
+            produto.Erro = TratarMensagemErro(ex);
+            await _db.SaveChangesAsync(cancellationToken);
+            throw;
+        }
     }
 
     private async Task CadastrarProduto(
@@ -374,6 +384,54 @@ public class CadastroProdutoService
         {
             return Truncar(
                 "Categoria invalida para a loja ou ambiente Shopee configurado.",
+                2000
+            );
+        }
+
+        if (message.Contains("Produto sem imagens para cadastro", StringComparison.OrdinalIgnoreCase))
+        {
+            return Truncar(
+                "Produto sem imagens. Preencha a IMAGENS_FTP para permitir o cadastro na Shopee.",
+                2000
+            );
+        }
+
+        if (message.Contains("Produto sem CATEGORIA_ID", StringComparison.OrdinalIgnoreCase))
+        {
+            return Truncar(
+                "Produto sem categoria. Preencha o campo CATEGORIA_ID para cadastrar na Shopee.",
+                2000
+            );
+        }
+
+        if (message.Contains("Produto sem preco valido", StringComparison.OrdinalIgnoreCase))
+        {
+            return Truncar(
+                "Produto sem preco valido. Revise PRECO_VENDA, PRECO_VAREJO ou PRECO_PADRAO.",
+                2000
+            );
+        }
+
+        if (message.Contains("Produto sem peso valido", StringComparison.OrdinalIgnoreCase))
+        {
+            return Truncar(
+                "Produto sem peso valido. Preencha o campo PESO para cadastrar na Shopee.",
+                2000
+            );
+        }
+
+        if (message.Contains("Produto sem dimensoes completas", StringComparison.OrdinalIgnoreCase))
+        {
+            return Truncar(
+                "Produto sem dimensoes completas. Preencha LARGURA, ALTURA e PROFUNDIDADE.",
+                2000
+            );
+        }
+
+        if (message.Contains("Produto sem CODIGO", StringComparison.OrdinalIgnoreCase))
+        {
+            return Truncar(
+                "Produto sem codigo. Preencha o campo CODIGO para cadastrar na Shopee.",
                 2000
             );
         }
