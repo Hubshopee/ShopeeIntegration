@@ -43,6 +43,7 @@ public class CadastroProdutoService
 
         var produtos = await _db.Produtos
             .Where(x => x.DataInclusao == null)
+            .Where(x => x.Status != "ERRO" || string.IsNullOrWhiteSpace(x.Erro))
             .OrderBy(x => x.Id)
             .ToListAsync(cancellationToken);
 
@@ -97,6 +98,7 @@ public class CadastroProdutoService
     {
         return await _db.Produtos
             .Where(x => x.DataInclusao == null)
+            .Where(x => x.Status != "ERRO" || string.IsNullOrWhiteSpace(x.Erro))
             .OrderBy(x => x.Id)
             .ToListAsync(cancellationToken);
     }
@@ -111,6 +113,17 @@ public class CadastroProdutoService
     {
         var produto = await _db.Produtos
             .FirstAsync(x => x.Id == produtoId, cancellationToken);
+
+        if (produto.DataInclusao == null
+            && string.Equals(produto.Status, "ERRO", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(produto.Erro))
+        {
+            _logger.LogInformation(
+                "Produto Codigo:{codigo} ignorado no cadastro porque possui erro pendente. Limpe o campo ERRO para tentar novamente.",
+                produto.Codigo
+            );
+            return;
+        }
 
         try
         {
@@ -362,6 +375,15 @@ public class CadastroProdutoService
     private static string TratarMensagemErro(Exception ex)
     {
         var message = ex.ToString();
+
+        if (message.Contains("item.duplicated", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("product is duplicated", StringComparison.OrdinalIgnoreCase))
+        {
+            return Truncar(
+                "Produto duplicado na Shopee. Altere o anuncio existente ou remova o duplicado antes de cadastrar novamente.",
+                2000
+            );
+        }
 
         if (message.Contains("product.error_invalid_logistic_info", StringComparison.OrdinalIgnoreCase)
             || message.Contains("logistics.no.valid.channel", StringComparison.OrdinalIgnoreCase))

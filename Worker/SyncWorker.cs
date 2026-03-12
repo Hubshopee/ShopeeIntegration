@@ -503,6 +503,12 @@ public class SyncWorker : BackgroundService
 
     private async Task LogarFalhaItemFila(ItemFila item, Exception ex, CancellationToken cancellationToken)
     {
+        if (EhProdutoDuplicadoNaShopee(ex))
+        {
+            await LogarProdutoDuplicado(item, cancellationToken);
+            return;
+        }
+
         if (!EhProdutoNaoEncontradoNaShopee(ex))
         {
             _logger.LogError(ex, "Falha ao processar item da fila Tipo:{tipo} ProdutoId:{produtoId}", item.Tipo, item.ProdutoId);
@@ -546,6 +552,34 @@ public class SyncWorker : BackgroundService
             || message.Contains("item_id invalid", StringComparison.OrdinalIgnoreCase)
             || message.Contains("product.error_item_not_found", StringComparison.OrdinalIgnoreCase)
             || message.Contains("product not found", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool EhProdutoDuplicadoNaShopee(Exception ex)
+    {
+        var message = ex.ToString();
+
+        return message.Contains("item.duplicated", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("product is duplicated", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("product.error_busi", StringComparison.OrdinalIgnoreCase)
+               && message.Contains("duplicat", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task LogarProdutoDuplicado(ItemFila item, CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<IntegrationDbContext>();
+        var produto = await db.Produtos
+            .AsNoTracking()
+            .Where(x => x.Id == item.ProdutoId)
+            .Select(x => new { x.Id, x.Codigo, x.ItemId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var codigo = produto?.Codigo?.ToString() ?? item.ProdutoId.ToString();
+
+        _logger.LogWarning(
+            "Produto {codigo} ja existe na Shopee em formato duplicado. Revise o anuncio existente antes de cadastrar novamente.",
+            codigo
+        );
     }
 
     private int ObterDelayPorTipo(TipoFila tipo)
