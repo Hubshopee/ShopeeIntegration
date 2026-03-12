@@ -28,7 +28,7 @@ public class EstoqueSyncService
                 .Where(x =>
                     x.ItemId != null
                     && x.DataEstoque != null
-                    && (!sync.SincDtDados.HasValue || x.DataEstoque > sync.SincDtDados))
+                    && (!sync.SincDtEst.HasValue || x.DataEstoque > sync.SincDtEst))
                 .OrderBy(x => x.DataEstoque)
                 .ToListAsync(cancellationToken);
         }

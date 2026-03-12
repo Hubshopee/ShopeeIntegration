@@ -28,7 +28,7 @@ public class PrecoSyncService
                 .Where(x =>
                     x.ItemId != null
                     && x.DataPreco != null
-                    && (!sync.SincDtDados.HasValue || x.DataPreco > sync.SincDtDados))
+                    && (!sync.SincDtPreco.HasValue || x.DataPreco > sync.SincDtPreco))
                 .OrderBy(x => x.DataPreco)
                 .ToListAsync(cancellationToken);
         }

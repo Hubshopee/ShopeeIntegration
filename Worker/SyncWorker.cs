@@ -137,19 +137,19 @@ public class SyncWorker : BackgroundService
             : [];
 
         var filaEstoque = (executarCargaInicial || DeveExecutarEstoque())
-            ? (await estoqueService.BuscarPendentes(stoppingToken, executarCargaInicial))
+            ? (await estoqueService.BuscarPendentes(stoppingToken))
                 .Select(x => CriarItemFila(TipoFila.Estoque, x))
                 .ToList()
             : [];
 
         var filaPreco = (executarCargaInicial || DeveExecutarPreco())
-            ? (await precoService.BuscarPendentes(stoppingToken, executarCargaInicial))
+            ? (await precoService.BuscarPendentes(stoppingToken))
                 .Select(x => CriarItemFila(TipoFila.Preco, x))
                 .ToList()
             : [];
 
         var filaDados = (executarCargaInicial || DeveExecutarDados())
-            ? (await dadosService.BuscarPendentes(stoppingToken, executarCargaInicial))
+            ? (await dadosService.BuscarPendentes(stoppingToken))
                 .Select(x => CriarItemFila(TipoFila.Dados, x))
                 .ToList()
             : [];
@@ -378,7 +378,7 @@ public class SyncWorker : BackgroundService
                     catch (Exception ex)
                     {
                         Interlocked.Increment(ref totalFalhas);
-                        _logger.LogError(ex, "Falha ao processar item da fila Tipo:{tipo} ProdutoId:{produtoId}", item.Tipo, item.ProdutoId);
+                        await LogarFalhaItemFila(item, ex, cancellationToken);
                     }
                     finally
                     {
@@ -413,6 +413,52 @@ public class SyncWorker : BackgroundService
         );
 
         return resultados.ToList();
+    }
+
+    private async Task LogarFalhaItemFila(ItemFila item, Exception ex, CancellationToken cancellationToken)
+    {
+        if (!EhProdutoNaoEncontradoNaShopee(ex))
+        {
+            _logger.LogError(ex, "Falha ao processar item da fila Tipo:{tipo} ProdutoId:{produtoId}", item.Tipo, item.ProdutoId);
+            return;
+        }
+
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<IntegrationDbContext>();
+        var produto = await db.Produtos
+            .AsNoTracking()
+            .Where(x => x.Id == item.ProdutoId)
+            .Select(x => new { x.Id, x.Codigo, x.ItemId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var codigo = produto?.Codigo?.ToString() ?? item.ProdutoId.ToString();
+        var acao = item.Tipo switch
+        {
+            TipoFila.Estoque => "atualizacao de estoque",
+            TipoFila.Preco => "atualizacao de preco",
+            TipoFila.Dados => "atualizacao de dados",
+            TipoFila.Cadastro => "processamento",
+            _ => "processamento"
+        };
+
+        _logger.LogWarning(
+            "Produto {codigo} nao encontrado na Shopee para {acao}. ItemId local: {itemId}",
+            codigo,
+            acao,
+            produto?.ItemId
+        );
+    }
+
+    private static bool EhProdutoNaoEncontradoNaShopee(Exception ex)
+    {
+        var message = ex.ToString();
+
+        return message.Contains("item_not_found", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("item not found", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("item not exist", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("item_id invalid", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("product.error_item_not_found", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("product not found", StringComparison.OrdinalIgnoreCase);
     }
 
     private int ObterDelayPorTipo(TipoFila tipo)

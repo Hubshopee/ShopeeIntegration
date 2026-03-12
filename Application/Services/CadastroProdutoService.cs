@@ -264,6 +264,9 @@ public class CadastroProdutoService
 
         produto.ItemId = itemId;
         produto.DataInclusao = DateTime.Now;
+        produto.DataEstoque = null;
+        produto.DataPreco = null;
+        produto.DataDados = null;
         produto.Status = "CADASTRADO";
         produto.Erro = null;
 
