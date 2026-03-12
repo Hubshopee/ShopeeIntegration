@@ -289,6 +289,57 @@ public class ShopeeCatalogService
         );
     }
 
+    public async Task DeleteItem(
+        string accessToken,
+        int partnerId,
+        string partnerKey,
+        int shopId,
+        ShopeeDeleteItemRequest item,
+        CancellationToken cancellationToken)
+    {
+        var payloads = new object[]
+        {
+            item,
+            new
+            {
+                item_id = item.ItemId
+            },
+            new
+            {
+                item_id_list = new[] { item.ItemId }
+            }
+        };
+
+        Exception? lastError = null;
+
+        foreach (var payload in payloads)
+        {
+            try
+            {
+                await SendJsonRequest(
+                    "/api/v2/product/delete_item",
+                    accessToken,
+                    partnerId,
+                    partnerKey,
+                    shopId,
+                    payload,
+                    "delete item",
+                    cancellationToken
+                );
+                return;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+            }
+        }
+
+        if (lastError is not null)
+            throw lastError;
+
+        throw new Exception("Shopee delete item falhou sem retorno detalhado.");
+    }
+
     public async Task<long> ResolveLogisticsChannelId(
         string accessToken,
         int partnerId,
@@ -996,4 +1047,10 @@ public class ShopeeUpdateItemRequest
 
     [JsonPropertyName("attribute_list")]
     public List<ShopeeAttributeRequest> AttributeList { get; set; } = [];
+}
+
+public class ShopeeDeleteItemRequest
+{
+    [JsonPropertyName("item_id")]
+    public long ItemId { get; set; }
 }

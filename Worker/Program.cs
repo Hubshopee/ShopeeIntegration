@@ -51,6 +51,7 @@ builder.Services.AddScoped<TokenSyncService>();
 builder.Services.AddScoped<CadastroProdutoService>();
 builder.Services.AddScoped<EstoqueSyncService>();
 builder.Services.AddScoped<PrecoSyncService>();
+builder.Services.AddScoped<ExclusaoSyncService>();
 builder.Services.AddScoped<DadosSyncService>();
 builder.Services.AddScoped<CatalogoNoturnoSyncService>();
 

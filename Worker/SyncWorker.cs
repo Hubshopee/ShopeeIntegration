@@ -12,6 +12,7 @@ public class SyncWorker : BackgroundService
 {
     private static DateTime? _ultimaExecucaoEstoque;
     private static DateTime? _ultimaExecucaoPreco;
+    private static DateTime? _ultimaExecucaoExclusao;
     private static DateTime? _ultimaExecucaoDados;
     private static bool _cargaInicialExecutada;
 
@@ -48,7 +49,7 @@ public class SyncWorker : BackgroundService
                 _logger.LogError(ex, "Erro na execucao das rotinas");
             }
 
-            await Task.Delay(TimeSpan.FromMinutes(_options.LoopIntervalMinutes), stoppingToken);
+            await Task.Delay(TimeSpan.FromMinutes(ObterIntervaloLoopMinutos()), stoppingToken);
         }
     }
 
@@ -80,12 +81,20 @@ public class SyncWorker : BackgroundService
     private void LogarAgendaConfigurada()
     {
         _logger.LogInformation(
-            "Agendamento configurado: loop a cada {loop} minutos, novos produtos a partir das {cadastro}:00, estoque a cada hora nos primeiros {janelaEstoque} minutos, preco as {preco}:00 nos primeiros {janelaPreco} minutos, dados as {dados}:00 nos primeiros {janelaDados} minutos, concorrencia global {paraleloGlobal}, delay global {delayGlobal}ms, buffer da fila {buffer}",
-            _options.LoopIntervalMinutes,
+            "Modo de execucao: teste {teste}, logs de loop {logsLoop}, intervalo efetivo do loop {intervalo} minutos",
+            _options.TestMode ? "ATIVO" : "DESATIVADO",
+            _options.ShowLoopLogs ? "ATIVADOS" : "DESATIVADOS",
+            ObterIntervaloLoopMinutos()
+        );
+        _logger.LogInformation(
+            "Agendamento configurado: loop a cada {loop} minutos, novos produtos a partir das {cadastro}:00, estoque a cada hora nos primeiros {janelaEstoque} minutos, preco as {preco}:00 nos primeiros {janelaPreco} minutos, exclusao as {exclusao}:00 nos primeiros {janelaExclusao} minutos, dados as {dados}:00 nos primeiros {janelaDados} minutos, concorrencia global {paraleloGlobal}, delay global {delayGlobal}ms, buffer da fila {buffer}",
+            ObterIntervaloLoopMinutos(),
             _options.CadastroHoraInicial,
             _options.EstoqueJanelaMinutos,
             _options.PrecoHora,
             _options.PrecoJanelaMinutos,
+            _options.ExclusaoHora,
+            _options.ExclusaoJanelaMinutos,
             _options.DadosHora,
             _options.DadosJanelaMinutos,
             _options.MaxParallelRequests,
@@ -93,13 +102,15 @@ public class SyncWorker : BackgroundService
             _options.QueueBufferSize
         );
         _logger.LogInformation(
-            "Concorrencia por fila: cadastro {cadastroParalelo}/{cadastroDelay}ms, estoque {estoqueParalelo}/{estoqueDelay}ms, preco {precoParalelo}/{precoDelay}ms, dados {dadosParalelo}/{dadosDelay}ms",
+            "Concorrencia por fila: cadastro {cadastroParalelo}/{cadastroDelay}ms, estoque {estoqueParalelo}/{estoqueDelay}ms, preco {precoParalelo}/{precoDelay}ms, exclusao {exclusaoParalelo}/{exclusaoDelay}ms, dados {dadosParalelo}/{dadosDelay}ms",
             _options.CadastroMaxParallelRequests,
             _options.CadastroDelayBetweenRequestsMs,
             _options.EstoqueMaxParallelRequests,
             _options.EstoqueDelayBetweenRequestsMs,
             _options.PrecoMaxParallelRequests,
             _options.PrecoDelayBetweenRequestsMs,
+            _options.ExclusaoMaxParallelRequests,
+            _options.ExclusaoDelayBetweenRequestsMs,
             _options.DadosMaxParallelRequests,
             _options.DadosDelayBetweenRequestsMs
         );
@@ -107,11 +118,15 @@ public class SyncWorker : BackgroundService
 
     private async Task ExecutarRotinas(CancellationToken stoppingToken)
     {
+        if (_options.ShowLoopLogs)
+            _logger.LogInformation("Iniciando ciclo do worker em {horario}", DateTime.Now);
+
         using var scope = _scopeFactory.CreateScope();
 
         var cadastroProdutoService = scope.ServiceProvider.GetRequiredService<CadastroProdutoService>();
         var estoqueService = scope.ServiceProvider.GetRequiredService<EstoqueSyncService>();
         var precoService = scope.ServiceProvider.GetRequiredService<PrecoSyncService>();
+        var exclusaoService = scope.ServiceProvider.GetRequiredService<ExclusaoSyncService>();
         var dadosService = scope.ServiceProvider.GetRequiredService<DadosSyncService>();
         var db = scope.ServiceProvider.GetRequiredService<IntegrationDbContext>();
 
@@ -136,20 +151,33 @@ public class SyncWorker : BackgroundService
                 .ToList()
             : [];
 
+        var filaExclusao = (executarCargaInicial || DeveExecutarExclusao())
+            ? (await exclusaoService.BuscarPendentes(stoppingToken))
+                .Select(x => CriarItemFila(TipoFila.Exclusao, x))
+                .ToList()
+            : [];
+
+        var produtosEmExclusao = filaExclusao
+            .Select(x => x.ProdutoId)
+            .ToHashSet();
+
         var filaEstoque = (executarCargaInicial || DeveExecutarEstoque())
             ? (await estoqueService.BuscarPendentes(stoppingToken))
+                .Where(x => !produtosEmExclusao.Contains(x.Id))
                 .Select(x => CriarItemFila(TipoFila.Estoque, x))
                 .ToList()
             : [];
 
         var filaPreco = (executarCargaInicial || DeveExecutarPreco())
             ? (await precoService.BuscarPendentes(stoppingToken))
+                .Where(x => !produtosEmExclusao.Contains(x.Id))
                 .Select(x => CriarItemFila(TipoFila.Preco, x))
                 .ToList()
             : [];
 
         var filaDados = (executarCargaInicial || DeveExecutarDados())
             ? (await dadosService.BuscarPendentes(stoppingToken))
+                .Where(x => !produtosEmExclusao.Contains(x.Id))
                 .Select(x => CriarItemFila(TipoFila.Dados, x))
                 .ToList()
             : [];
@@ -157,22 +185,30 @@ public class SyncWorker : BackgroundService
         if (executarCargaInicial)
         {
             _logger.LogInformation(
-                "Carga inicial ativada: novos produtos, estoque, preco e dados serao verificados agora antes de seguir a agenda configurada"
+                "Carga inicial ativada: novos produtos, estoque, preco, exclusao e dados serao verificados agora antes de seguir a agenda configurada"
             );
         }
 
-        _logger.LogInformation(
-            "Filas carregadas: cadastro {cadastro}, estoque {estoque}, preco {preco}, dados {dados}",
-            filaCadastro.Count,
-            filaEstoque.Count,
-            filaPreco.Count,
-            filaDados.Count
-        );
+        if (_options.ShowLoopLogs || filaCadastro.Count > 0 || filaEstoque.Count > 0 || filaPreco.Count > 0 || filaExclusao.Count > 0 || filaDados.Count > 0)
+        {
+            _logger.LogInformation(
+                "Filas carregadas: cadastro {cadastro}, estoque {estoque}, preco {preco}, exclusao {exclusao}, dados {dados}",
+                filaCadastro.Count,
+                filaEstoque.Count,
+                filaPreco.Count,
+                filaExclusao.Count,
+                filaDados.Count
+            );
+        }
 
-        var fila = MontarFilaRoundRobin(filaEstoque, filaPreco, filaDados, filaCadastro);
+        var fila = MontarFilaRoundRobin(filaEstoque, filaPreco, filaExclusao, filaDados, filaCadastro);
 
         if (fila.Count == 0)
+        {
+            if (_options.ShowLoopLogs)
+                _logger.LogInformation("Nenhum item pendente neste ciclo");
             return;
+        }
 
         var resultados = await ProcessarFila(
             fila,
@@ -186,10 +222,12 @@ public class SyncWorker : BackgroundService
         using var checkpointScope = _scopeFactory.CreateScope();
         var estoqueCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<EstoqueSyncService>();
         var precoCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<PrecoSyncService>();
+        var exclusaoCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<ExclusaoSyncService>();
         var dadosCheckpointService = checkpointScope.ServiceProvider.GetRequiredService<DadosSyncService>();
 
         var estoqueProcessado = resultados.Where(x => x.Tipo == TipoFila.Estoque).ToList();
         var precoProcessado = resultados.Where(x => x.Tipo == TipoFila.Preco).ToList();
+        var exclusoesProcessadas = resultados.Where(x => x.Tipo == TipoFila.Exclusao).ToList();
         var dadosProcessados = resultados.Where(x => x.Tipo == TipoFila.Dados).ToList();
 
         if (estoqueProcessado.Count > 0)
@@ -214,6 +252,16 @@ public class SyncWorker : BackgroundService
             _ultimaExecucaoPreco = DateTime.Now;
         }
 
+        if (exclusoesProcessadas.Count > 0)
+        {
+            await exclusaoCheckpointService.AtualizarCheckpoint(
+                exclusoesProcessadas.Select(x => new Produto { DataExclusao = x.DataReferencia }).ToList(),
+                stoppingToken,
+                marcoCargaInicial
+            );
+            _ultimaExecucaoExclusao = DateTime.Now;
+        }
+
         if (dadosProcessados.Count > 0)
         {
             await dadosCheckpointService.AtualizarCheckpoint(
@@ -225,13 +273,17 @@ public class SyncWorker : BackgroundService
             _ultimaExecucaoDados = DateTime.Now;
         }
 
-        _logger.LogInformation(
-            "Processamento concluido: cadastro {cadastro}, estoque {estoque}, preco {preco}, dados {dados}",
-            resultados.Count(x => x.Tipo == TipoFila.Cadastro),
-            estoqueProcessado.Count,
-            precoProcessado.Count,
-            dadosProcessados.Count
-        );
+        if (_options.ShowLoopLogs || resultados.Count > 0)
+        {
+            _logger.LogInformation(
+                "Processamento concluido: cadastro {cadastro}, estoque {estoque}, preco {preco}, exclusao {exclusao}, dados {dados}",
+                resultados.Count(x => x.Tipo == TipoFila.Cadastro),
+                estoqueProcessado.Count,
+                precoProcessado.Count,
+                exclusoesProcessadas.Count,
+                dadosProcessados.Count
+            );
+        }
 
         if (executarCargaInicial)
             _cargaInicialExecutada = true;
@@ -256,6 +308,7 @@ public class SyncWorker : BackgroundService
             [TipoFila.Cadastro] = new SemaphoreSlim(Math.Max(1, _options.CadastroMaxParallelRequests), Math.Max(1, _options.CadastroMaxParallelRequests)),
             [TipoFila.Estoque] = new SemaphoreSlim(Math.Max(1, _options.EstoqueMaxParallelRequests), Math.Max(1, _options.EstoqueMaxParallelRequests)),
             [TipoFila.Preco] = new SemaphoreSlim(Math.Max(1, _options.PrecoMaxParallelRequests), Math.Max(1, _options.PrecoMaxParallelRequests)),
+            [TipoFila.Exclusao] = new SemaphoreSlim(Math.Max(1, _options.ExclusaoMaxParallelRequests), Math.Max(1, _options.ExclusaoMaxParallelRequests)),
             [TipoFila.Dados] = new SemaphoreSlim(Math.Max(1, _options.DadosMaxParallelRequests), Math.Max(1, _options.DadosMaxParallelRequests))
         };
         var rateLocksPorTipo = new Dictionary<TipoFila, SemaphoreSlim>
@@ -263,6 +316,7 @@ public class SyncWorker : BackgroundService
             [TipoFila.Cadastro] = new SemaphoreSlim(1, 1),
             [TipoFila.Estoque] = new SemaphoreSlim(1, 1),
             [TipoFila.Preco] = new SemaphoreSlim(1, 1),
+            [TipoFila.Exclusao] = new SemaphoreSlim(1, 1),
             [TipoFila.Dados] = new SemaphoreSlim(1, 1)
         };
         var ultimaSaidaPorTipo = new ConcurrentDictionary<TipoFila, DateTime>();
@@ -367,6 +421,10 @@ public class SyncWorker : BackgroundService
                                 await scope.ServiceProvider.GetRequiredService<PrecoSyncService>()
                                     .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, cancellationToken);
                                 break;
+                            case TipoFila.Exclusao:
+                                await scope.ServiceProvider.GetRequiredService<ExclusaoSyncService>()
+                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, cancellationToken);
+                                break;
                             case TipoFila.Dados:
                                 await scope.ServiceProvider.GetRequiredService<DadosSyncService>()
                                     .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, cancellationToken);
@@ -387,7 +445,7 @@ public class SyncWorker : BackgroundService
 
                         var processados = Interlocked.Increment(ref totalProcessados);
 
-                        if (processados % 250 == 0 || processados == fila.Count)
+                        if (_options.ShowLoopLogs && (processados % 250 == 0 || processados == fila.Count))
                         {
                             _logger.LogInformation(
                                 "Fila em andamento: {processados}/{total} processados, {sucesso} com sucesso, {falhas} com falha",
@@ -405,14 +463,25 @@ public class SyncWorker : BackgroundService
         await produtores;
         await Task.WhenAll(consumidores);
 
-        _logger.LogInformation(
-            "Fila finalizada: {total} itens, {sucesso} com sucesso, {falhas} com falha",
-            fila.Count,
-            resultados.Count,
-            totalFalhas
-        );
+        if (_options.ShowLoopLogs || totalFalhas > 0)
+        {
+            _logger.LogInformation(
+                "Fila finalizada: {total} itens, {sucesso} com sucesso, {falhas} com falha",
+                fila.Count,
+                resultados.Count,
+                totalFalhas
+            );
+        }
 
         return resultados.ToList();
+    }
+
+    private int ObterIntervaloLoopMinutos()
+    {
+        if (_options.TestMode)
+            return Math.Max(1, _options.TestLoopIntervalMinutes);
+
+        return Math.Max(1, _options.LoopIntervalMinutes);
     }
 
     private async Task LogarFalhaItemFila(ItemFila item, Exception ex, CancellationToken cancellationToken)
@@ -436,6 +505,7 @@ public class SyncWorker : BackgroundService
         {
             TipoFila.Estoque => "atualizacao de estoque",
             TipoFila.Preco => "atualizacao de preco",
+            TipoFila.Exclusao => "exclusao",
             TipoFila.Dados => "atualizacao de dados",
             TipoFila.Cadastro => "processamento",
             _ => "processamento"
@@ -468,6 +538,7 @@ public class SyncWorker : BackgroundService
             TipoFila.Cadastro => Math.Max(0, _options.CadastroDelayBetweenRequestsMs),
             TipoFila.Estoque => Math.Max(0, _options.EstoqueDelayBetweenRequestsMs),
             TipoFila.Preco => Math.Max(0, _options.PrecoDelayBetweenRequestsMs),
+            TipoFila.Exclusao => Math.Max(0, _options.ExclusaoDelayBetweenRequestsMs),
             TipoFila.Dados => Math.Max(0, _options.DadosDelayBetweenRequestsMs),
             _ => 0
         };
@@ -476,6 +547,7 @@ public class SyncWorker : BackgroundService
     private static List<ItemFila> MontarFilaRoundRobin(
         List<ItemFila> estoque,
         List<ItemFila> preco,
+        List<ItemFila> exclusao,
         List<ItemFila> dados,
         List<ItemFila> cadastro)
     {
@@ -483,6 +555,7 @@ public class SyncWorker : BackgroundService
         {
             new Queue<ItemFila>(estoque),
             new Queue<ItemFila>(preco),
+            new Queue<ItemFila>(exclusao),
             new Queue<ItemFila>(dados),
             new Queue<ItemFila>(cadastro)
         };
@@ -507,6 +580,7 @@ public class SyncWorker : BackgroundService
         {
             TipoFila.Estoque => produto.DataEstoque,
             TipoFila.Preco => produto.DataPreco,
+            TipoFila.Exclusao => produto.DataExclusao,
             TipoFila.Dados => produto.DataDados,
             _ => null
         };
@@ -516,11 +590,17 @@ public class SyncWorker : BackgroundService
 
     private bool DeveExecutarCadastro()
     {
+        if (_options.TestMode)
+            return true;
+
         return DateTime.Now.Hour >= _options.CadastroHoraInicial;
     }
 
     private bool DeveExecutarEstoque()
     {
+        if (_options.TestMode)
+            return true;
+
         var agora = DateTime.Now;
 
         if (agora.Minute >= _options.EstoqueJanelaMinutos)
@@ -533,6 +613,9 @@ public class SyncWorker : BackgroundService
 
     private bool DeveExecutarPreco()
     {
+        if (_options.TestMode)
+            return true;
+
         var agora = DateTime.Now;
 
         if (agora.Hour != _options.PrecoHora || agora.Minute >= _options.PrecoJanelaMinutos)
@@ -544,6 +627,9 @@ public class SyncWorker : BackgroundService
 
     private bool DeveExecutarDados()
     {
+        if (_options.TestMode)
+            return true;
+
         var agora = DateTime.Now;
 
         if (agora.Hour != _options.DadosHora || agora.Minute >= _options.DadosJanelaMinutos)
@@ -553,10 +639,25 @@ public class SyncWorker : BackgroundService
             || _ultimaExecucaoDados.Value.Date != agora.Date;
     }
 
+    private bool DeveExecutarExclusao()
+    {
+        if (_options.TestMode)
+            return true;
+
+        var agora = DateTime.Now;
+
+        if (agora.Hour != _options.ExclusaoHora || agora.Minute >= _options.ExclusaoJanelaMinutos)
+            return false;
+
+        return !_ultimaExecucaoExclusao.HasValue
+            || _ultimaExecucaoExclusao.Value.Date != agora.Date;
+    }
+
     private enum TipoFila
     {
         Estoque,
         Preco,
+        Exclusao,
         Dados,
         Cadastro
     }
