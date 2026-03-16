@@ -227,6 +227,8 @@ public class CadastroProdutoService
             Description = descricao,
             ItemSku = produto.Sku,
             GtinCode = string.IsNullOrWhiteSpace(produto.Gtin) ? null : produto.Gtin.Trim(),
+            Ncm = NormalizarNcm(produto.Ncm),
+            Origin = string.IsNullOrWhiteSpace(produto.Origem) ? null : produto.Origem.Trim(),
             CategoryId = produto.CategoriaId.Value,
             Weight = pesoKg,
             Dimension = new ShopeeDimensionRequest
@@ -335,7 +337,7 @@ public class CadastroProdutoService
             ?? produto.Descricao
             ?? titulo;
 
-        descricao = descricao.Trim();
+        descricao = NormalizarDescricao(descricao);
 
         if (descricao.Length >= 10)
             return descricao;
@@ -351,6 +353,16 @@ public class CadastroProdutoService
             return Truncar(descricaoNormalizada, 5000);
 
         return Truncar($"{titulo} produto original", 5000);
+    }
+
+    private static string NormalizarDescricao(string texto)
+    {
+        return texto
+            .Replace("\\r\\n", "\n", StringComparison.Ordinal)
+            .Replace("\\n", "\n", StringComparison.Ordinal)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Trim();
     }
 
     private static decimal NormalizarDimensao(decimal valor)
@@ -370,6 +382,15 @@ public class CadastroProdutoService
             return texto;
 
         return texto[..maximo];
+    }
+
+    private static string? NormalizarNcm(string? ncm)
+    {
+        if (string.IsNullOrWhiteSpace(ncm))
+            return null;
+
+        var digits = new string(ncm.Where(char.IsDigit).ToArray());
+        return string.IsNullOrWhiteSpace(digits) ? null : digits;
     }
 
     private static string TratarMensagemErro(Exception ex)

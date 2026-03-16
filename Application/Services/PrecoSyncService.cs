@@ -107,6 +107,7 @@ public class PrecoSyncService
         int partnerId,
         string partnerKey,
         int shopId,
+        DateTime? dataSincronizacao,
         CancellationToken cancellationToken)
     {
         var produto = await _db.Produtos
@@ -120,7 +121,7 @@ public class PrecoSyncService
         if (!preco.HasValue || preco <= 0)
             return;
 
-        var dataAtualizacao = DateTime.Now;
+        var dataAtualizacao = dataSincronizacao ?? DateTime.Now;
 
         await _catalogService.UpdatePrice(
             accessToken,

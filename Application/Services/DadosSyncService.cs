@@ -102,6 +102,8 @@ public class DadosSyncService
                 Description = MontarDescricao(produto, titulo),
                 ItemSku = produto.Sku,
                 GtinCode = string.IsNullOrWhiteSpace(produto.Gtin) ? null : produto.Gtin.Trim(),
+                Ncm = NormalizarNcm(produto.Ncm),
+                Origin = string.IsNullOrWhiteSpace(produto.Origem) ? null : produto.Origem.Trim(),
                 Weight = decimal.Round(produto.Peso.Value / 1000m, 3),
                 Dimension = new ShopeeDimensionRequest
                 {
@@ -150,6 +152,7 @@ public class DadosSyncService
         int partnerId,
         string partnerKey,
         int shopId,
+        DateTime? dataSincronizacao,
         CancellationToken cancellationToken)
     {
         var produto = await _db.Produtos
@@ -164,7 +167,7 @@ public class DadosSyncService
         if (!produto.Largura.HasValue || !produto.Altura.HasValue || !produto.Profundidade.HasValue)
             return;
 
-        var dataAtualizacao = DateTime.Now;
+        var dataAtualizacao = dataSincronizacao ?? DateTime.Now;
 
         var atributos = produto.Codigo.HasValue
             ? await _db.Atributos
@@ -185,6 +188,8 @@ public class DadosSyncService
             Description = MontarDescricao(produto, titulo),
             ItemSku = produto.Sku,
             GtinCode = string.IsNullOrWhiteSpace(produto.Gtin) ? null : produto.Gtin.Trim(),
+            Ncm = NormalizarNcm(produto.Ncm),
+            Origin = string.IsNullOrWhiteSpace(produto.Origem) ? null : produto.Origem.Trim(),
             Weight = decimal.Round(produto.Peso.Value / 1000m, 3),
             Dimension = new ShopeeDimensionRequest
             {
@@ -231,7 +236,7 @@ public class DadosSyncService
             ?? produto.Descricao
             ?? titulo;
 
-        descricao = descricao.Trim();
+        descricao = NormalizarDescricao(descricao);
 
         if (descricao.Length >= 10)
             return descricao;
@@ -247,6 +252,16 @@ public class DadosSyncService
             return Truncar(descricaoNormalizada, 5000);
 
         return Truncar($"{titulo} produto original", 5000);
+    }
+
+    private static string NormalizarDescricao(string texto)
+    {
+        return texto
+            .Replace("\\r\\n", "\n", StringComparison.Ordinal)
+            .Replace("\\n", "\n", StringComparison.Ordinal)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Trim();
     }
 
     private static List<ShopeeAttributeRequest> MontarAtributos(List<Atributo> atributos)
@@ -276,6 +291,15 @@ public class DadosSyncService
             return decimal.Round(valor * 100m, 0, MidpointRounding.AwayFromZero);
 
         return decimal.Round(valor, 0, MidpointRounding.AwayFromZero);
+    }
+
+    private static string? NormalizarNcm(string? ncm)
+    {
+        if (string.IsNullOrWhiteSpace(ncm))
+            return null;
+
+        var digits = new string(ncm.Where(char.IsDigit).ToArray());
+        return string.IsNullOrWhiteSpace(digits) ? null : digits;
     }
 
     private static string Truncar(string texto, int maximo)

@@ -53,6 +53,7 @@ public class ExclusaoSyncService
         int partnerId,
         string partnerKey,
         int shopId,
+        DateTime? dataSincronizacao,
         CancellationToken cancellationToken)
     {
         var produto = await _db.Produtos
@@ -61,7 +62,7 @@ public class ExclusaoSyncService
         if (!produto.ItemId.HasValue)
             return;
 
-        var dataAtualizacao = DateTime.Now;
+        var dataAtualizacao = dataSincronizacao ?? DateTime.Now;
 
         try
         {

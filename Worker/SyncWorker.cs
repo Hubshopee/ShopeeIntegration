@@ -39,6 +39,8 @@ public class SyncWorker : BackgroundService
         if (!await VerificarConexaoBanco(stoppingToken))
             return;
 
+        await ValidarTokenNaInicializacao(stoppingToken);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -77,6 +79,15 @@ public class SyncWorker : BackgroundService
             _logger.LogError("Falha ao conectar no SQL Server");
             return false;
         }
+    }
+
+    private async Task ValidarTokenNaInicializacao(CancellationToken stoppingToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var tokenService = scope.ServiceProvider.GetRequiredService<TokenSyncService>();
+
+        _logger.LogInformation("Validando token na inicializacao do worker");
+        await tokenService.ObterTokenValido();
     }
 
     private void LogarAgendaConfigurada()
@@ -424,6 +435,8 @@ public class SyncWorker : BackgroundService
                             tokenLock.Release();
                         }
 
+                        var dataSincronizacao = DateTime.Now;
+
                         switch (item.Tipo)
                         {
                             case TipoFila.Cadastro:
@@ -432,23 +445,23 @@ public class SyncWorker : BackgroundService
                                 break;
                             case TipoFila.Estoque:
                                 await scope.ServiceProvider.GetRequiredService<EstoqueSyncService>()
-                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, cancellationToken);
+                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, dataSincronizacao, cancellationToken);
                                 break;
                             case TipoFila.Preco:
                                 await scope.ServiceProvider.GetRequiredService<PrecoSyncService>()
-                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, cancellationToken);
+                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, dataSincronizacao, cancellationToken);
                                 break;
                             case TipoFila.Exclusao:
                                 await scope.ServiceProvider.GetRequiredService<ExclusaoSyncService>()
-                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, cancellationToken);
+                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, dataSincronizacao, cancellationToken);
                                 break;
                             case TipoFila.Dados:
                                 await scope.ServiceProvider.GetRequiredService<DadosSyncService>()
-                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, cancellationToken);
+                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, dataSincronizacao, cancellationToken);
                                 break;
                         }
 
-                        resultados.Add(new ResultadoFila(item.Tipo, item.DataReferencia));
+                        resultados.Add(new ResultadoFila(item.Tipo, dataSincronizacao));
                     }
                     catch (Exception ex)
                     {

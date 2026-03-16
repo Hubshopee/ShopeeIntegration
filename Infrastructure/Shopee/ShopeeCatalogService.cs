@@ -880,6 +880,12 @@ public class ShopeeCreateItemRequest
     [JsonPropertyName("gtin_code")]
     public string? GtinCode { get; set; }
 
+    [JsonPropertyName("ncm")]
+    public string? Ncm { get; set; }
+
+    [JsonPropertyName("origin")]
+    public string? Origin { get; set; }
+
     [JsonPropertyName("category_id")]
     public long CategoryId { get; set; }
 
@@ -1038,6 +1044,12 @@ public class ShopeeUpdateItemRequest
 
     [JsonPropertyName("gtin_code")]
     public string? GtinCode { get; set; }
+
+    [JsonPropertyName("ncm")]
+    public string? Ncm { get; set; }
+
+    [JsonPropertyName("origin")]
+    public string? Origin { get; set; }
 
     [JsonPropertyName("weight")]
     public decimal Weight { get; set; }
