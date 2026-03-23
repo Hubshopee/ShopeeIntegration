@@ -13,4 +13,5 @@ public class SyncShopee
     public DateTime? SincDtPreco { get; set; }
     public DateTime? SincDtDados { get; set; }
     public DateTime? SincDtExclusao { get; set; }
+    public DateTime? SincDtPedidos { get; set; }
 }

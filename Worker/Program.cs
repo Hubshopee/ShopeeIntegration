@@ -53,6 +53,7 @@ builder.Services.AddScoped<EstoqueSyncService>();
 builder.Services.AddScoped<PrecoSyncService>();
 builder.Services.AddScoped<ExclusaoSyncService>();
 builder.Services.AddScoped<DadosSyncService>();
+builder.Services.AddScoped<PedidoSyncService>();
 builder.Services.AddScoped<CatalogoNoturnoSyncService>();
 
 builder.Services.AddHostedService<SyncWorker>();

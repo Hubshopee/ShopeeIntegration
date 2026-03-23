@@ -14,6 +14,7 @@ public class SyncWorker : BackgroundService
     private static DateTime? _ultimaExecucaoPreco;
     private static DateTime? _ultimaExecucaoExclusao;
     private static DateTime? _ultimaExecucaoDados;
+    private static DateTime? _ultimaExecucaoPedidos;
     private static bool _cargaInicialExecutada;
     private static readonly SemaphoreSlim _execucaoLock = new(1, 1);
 
@@ -99,7 +100,7 @@ public class SyncWorker : BackgroundService
             ObterIntervaloLoopMinutos()
         );
         _logger.LogInformation(
-            "Agendamento configurado: loop a cada {loop} minutos, novos produtos a partir das {cadastro}:00, estoque a cada hora nos primeiros {janelaEstoque} minutos, preco as {preco}:00 nos primeiros {janelaPreco} minutos, exclusao as {exclusao}:00 nos primeiros {janelaExclusao} minutos, dados as {dados}:00 nos primeiros {janelaDados} minutos, concorrencia global {paraleloGlobal}, delay global {delayGlobal}ms, buffer da fila {buffer}",
+            "Agendamento configurado: loop a cada {loop} minutos, novos produtos a partir das {cadastro}:00, estoque a cada hora nos primeiros {janelaEstoque} minutos, preco as {preco}:00 nos primeiros {janelaPreco} minutos, exclusao as {exclusao}:00 nos primeiros {janelaExclusao} minutos, dados as {dados}:00 nos primeiros {janelaDados} minutos, pedidos a cada {pedidos} minutos, concorrencia global {paraleloGlobal}, delay global {delayGlobal}ms, buffer da fila {buffer}",
             ObterIntervaloLoopMinutos(),
             _options.CadastroHoraInicial,
             _options.EstoqueJanelaMinutos,
@@ -109,12 +110,13 @@ public class SyncWorker : BackgroundService
             _options.ExclusaoJanelaMinutos,
             _options.DadosHora,
             _options.DadosJanelaMinutos,
+            _options.PedidosIntervalMinutes,
             _options.MaxParallelRequests,
             _options.DelayBetweenRequestsMs,
             _options.QueueBufferSize
         );
         _logger.LogInformation(
-            "Concorrencia por fila: cadastro {cadastroParalelo}/{cadastroDelay}ms, estoque {estoqueParalelo}/{estoqueDelay}ms, preco {precoParalelo}/{precoDelay}ms, exclusao {exclusaoParalelo}/{exclusaoDelay}ms, dados {dadosParalelo}/{dadosDelay}ms",
+            "Concorrencia por fila: cadastro {cadastroParalelo}/{cadastroDelay}ms, estoque {estoqueParalelo}/{estoqueDelay}ms, preco {precoParalelo}/{precoDelay}ms, exclusao {exclusaoParalelo}/{exclusaoDelay}ms, dados {dadosParalelo}/{dadosDelay}ms, pedidos {pedidosParalelo}/{pedidosDelay}ms",
             _options.CadastroMaxParallelRequests,
             _options.CadastroDelayBetweenRequestsMs,
             _options.EstoqueMaxParallelRequests,
@@ -124,7 +126,9 @@ public class SyncWorker : BackgroundService
             _options.ExclusaoMaxParallelRequests,
             _options.ExclusaoDelayBetweenRequestsMs,
             _options.DadosMaxParallelRequests,
-            _options.DadosDelayBetweenRequestsMs
+            _options.DadosDelayBetweenRequestsMs,
+            _options.PedidosMaxParallelRequests,
+            _options.PedidosDelayBetweenRequestsMs
         );
     }
 
@@ -150,6 +154,7 @@ public class SyncWorker : BackgroundService
             var precoService = scope.ServiceProvider.GetRequiredService<PrecoSyncService>();
             var exclusaoService = scope.ServiceProvider.GetRequiredService<ExclusaoSyncService>();
             var dadosService = scope.ServiceProvider.GetRequiredService<DadosSyncService>();
+            var pedidoService = scope.ServiceProvider.GetRequiredService<PedidoSyncService>();
             var db = scope.ServiceProvider.GetRequiredService<IntegrationDbContext>();
 
             var sync = await db.SyncShopee
@@ -207,7 +212,7 @@ public class SyncWorker : BackgroundService
             if (executarCargaInicial)
             {
                 _logger.LogInformation(
-                    "Carga inicial ativada: novos produtos, estoque, preco, exclusao e dados serao verificados agora antes de seguir a agenda configurada"
+                    "Carga inicial ativada: novos produtos, estoque, preco, exclusao, dados e pedidos serao verificados agora antes de seguir a agenda configurada"
                 );
             }
 
@@ -225,7 +230,10 @@ public class SyncWorker : BackgroundService
 
             var fila = MontarFilaRoundRobin(filaEstoque, filaPreco, filaExclusao, filaDados, filaCadastro);
 
-            if (fila.Count == 0)
+            var processarPedidos = executarCargaInicial || DeveExecutarPedidos();
+            var pedidosProcessados = 0;
+
+            if (fila.Count == 0 && !processarPedidos)
             {
                 if (_options.ShowLoopLogs)
                     _logger.LogInformation("Nenhum item pendente neste ciclo");
@@ -233,13 +241,33 @@ public class SyncWorker : BackgroundService
                 return;
             }
 
-            var resultados = await ProcessarFila(
-                fila,
-                sync.PartnerId.Value,
-                sync.ClientSecret,
-                sync.ShopId.Value,
-                stoppingToken
-            );
+            var resultados = fila.Count > 0
+                ? await ProcessarFila(
+                    fila,
+                    sync.PartnerId.Value,
+                    sync.ClientSecret,
+                    sync.ShopId.Value,
+                    stoppingToken
+                )
+                : [];
+
+            if (processarPedidos)
+            {
+                var tokenService = scope.ServiceProvider.GetRequiredService<TokenSyncService>();
+                var accessToken = await tokenService.ObterTokenValido();
+
+                pedidosProcessados = await pedidoService.ProcessarPendentes(
+                    accessToken,
+                    sync.PartnerId.Value,
+                    sync.ClientSecret,
+                    sync.ShopId.Value,
+                    executarCargaInicial,
+                    stoppingToken
+                );
+
+                _ultimaExecucaoPedidos = DateTime.Now;
+            }
+
             var marcoCargaInicial = executarCargaInicial ? DateTime.Now : (DateTime?)null;
 
             using var checkpointScope = _scopeFactory.CreateScope();
@@ -306,6 +334,14 @@ public class SyncWorker : BackgroundService
                     exclusoesProcessadas.Count,
                     dadosProcessados.Count
                 );
+
+                if (processarPedidos)
+                {
+                    _logger.LogInformation(
+                        "Processamento de pedidos concluido: {pedidos} pedidos sincronizados",
+                        pedidosProcessados
+                    );
+                }
             }
 
             if (executarCargaInicial)
@@ -715,6 +751,17 @@ public class SyncWorker : BackgroundService
 
         return !_ultimaExecucaoExclusao.HasValue
             || _ultimaExecucaoExclusao.Value.Date != agora.Date;
+    }
+
+    private bool DeveExecutarPedidos()
+    {
+        if (_options.TestMode)
+            return true;
+
+        var agora = DateTime.Now;
+
+        return !_ultimaExecucaoPedidos.HasValue
+            || _ultimaExecucaoPedidos.Value.AddMinutes(Math.Max(1, _options.PedidosIntervalMinutes)) <= agora;
     }
 
     private enum TipoFila

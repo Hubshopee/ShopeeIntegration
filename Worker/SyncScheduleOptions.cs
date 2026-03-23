@@ -14,6 +14,7 @@ public class SyncScheduleOptions
     public int ExclusaoJanelaMinutos { get; set; } = 5;
     public int DadosHora { get; set; } = 23;
     public int DadosJanelaMinutos { get; set; } = 5;
+    public int PedidosIntervalMinutes { get; set; } = 15;
     public int MaxParallelRequests { get; set; } = 3;
     public int DelayBetweenRequestsMs { get; set; } = 250;
     public int QueueBufferSize { get; set; } = 500;
@@ -27,4 +28,6 @@ public class SyncScheduleOptions
     public int ExclusaoDelayBetweenRequestsMs { get; set; } = 400;
     public int DadosMaxParallelRequests { get; set; } = 1;
     public int DadosDelayBetweenRequestsMs { get; set; } = 400;
+    public int PedidosMaxParallelRequests { get; set; } = 1;
+    public int PedidosDelayBetweenRequestsMs { get; set; } = 400;
 }

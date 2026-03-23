@@ -14,6 +14,8 @@ public class IntegrationDbContext : DbContext
     public DbSet<ImagemFtp> ImagensFtp => Set<ImagemFtp>();
     public DbSet<Atributo> Atributos => Set<Atributo>();
     public DbSet<SyncShopee> SyncShopee => Set<SyncShopee>();
+    public DbSet<PedidoMarketplace> PedidosMarketplace => Set<PedidoMarketplace>();
+    public DbSet<PedidoMarketplaceItem> PedidosMarketplaceItens => Set<PedidoMarketplaceItem>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -107,6 +109,97 @@ public class IntegrationDbContext : DbContext
             entity.Property(x => x.SincDtPreco).HasColumnName("SINCDTPRECO");
             entity.Property(x => x.SincDtDados).HasColumnName("SINCDTDADOS");
             entity.Property(x => x.SincDtExclusao).HasColumnName("SINCDTEXCLUSAO");
+            entity.Property(x => x.SincDtPedidos).HasColumnName("SINCDTPEDIDOS");
+        });
+
+        modelBuilder.Entity<PedidoMarketplace>(entity =>
+        {
+            entity.ToTable("VTPEDIDO");
+            entity.HasKey(x => x.VPedCod);
+
+            entity.Property(x => x.VPedCod).HasColumnName("VPEDCOD");
+            entity.Property(x => x.VPedCreationDate).HasColumnName("VPEDCREATIONDATE");
+            entity.Property(x => x.VPedOrderId).HasColumnName("VPEDORDERID");
+            entity.Property(x => x.VPedVlrTot).HasColumnName("VPEDVLRTOT").HasPrecision(12, 2);
+            entity.Property(x => x.VPedUserProfileId).HasColumnName("VPEDUSERPROFILEID");
+            entity.Property(x => x.VPedFirstName).HasColumnName("VPEDFIRSTNAME");
+            entity.Property(x => x.VPedLastName).HasColumnName("VPEDLASTNAME");
+            entity.Property(x => x.VPedEmail).HasColumnName("VPEDEMAIL");
+            entity.Property(x => x.VPedDocument).HasColumnName("VPEDDOCUMENT");
+            entity.Property(x => x.VPedPostalCode).HasColumnName("VPEDPOSTALCODE");
+            entity.Property(x => x.VPedCity).HasColumnName("VPEDCITY");
+            entity.Property(x => x.VPedState).HasColumnName("VPEDSTATE");
+            entity.Property(x => x.VPedStreet).HasColumnName("VPEDSTREET");
+            entity.Property(x => x.VPedNumber).HasColumnName("VPEDNUMBER");
+            entity.Property(x => x.VPedNeighborhood).HasColumnName("VPEDNEIGHBORHOOD");
+            entity.Property(x => x.VPedComplement).HasColumnName("VPEDCOMPLEMENT");
+            entity.Property(x => x.VPedReference).HasColumnName("VPEDREFERENCE");
+            entity.Property(x => x.VPedVlrTotItens).HasColumnName("VPEDVLRTOTITENS").HasPrecision(12, 2);
+            entity.Property(x => x.VPedVlrDiscounts).HasColumnName("VPEDVLRDISCOUNTS").HasPrecision(12, 2);
+            entity.Property(x => x.VPedVlrShipping).HasColumnName("VPEDVLRSHIPPING").HasPrecision(12, 2);
+            entity.Property(x => x.VPedVlrTax).HasColumnName("VPEDVLRTAX").HasPrecision(12, 2);
+            entity.Property(x => x.VPedPhone).HasColumnName("VPEDPHONE");
+            entity.Property(x => x.VPedStatus).HasColumnName("VPEDSTATUS");
+            entity.Property(x => x.VPedDtInc).HasColumnName("VPEDDTINC");
+            entity.Property(x => x.PedCod).HasColumnName("PEDCOD").HasPrecision(12, 0);
+            entity.Property(x => x.VPedNf).HasColumnName("VPEDNF");
+            entity.Property(x => x.ConCod).HasColumnName("CONCOD");
+            entity.Property(x => x.NfCod).HasColumnName("NFCOD").HasPrecision(7, 0);
+            entity.Property(x => x.VPedMotivo).HasColumnName("VPEDMOTIVO");
+            entity.Property(x => x.VPedCompleto).HasColumnName("VPEDCOMPLETO");
+            entity.Property(x => x.VPedCombine).HasColumnName("VPEDCOMBINE");
+            entity.Property(x => x.CliCod).HasColumnName("CLICOD").HasPrecision(5, 0);
+            entity.Property(x => x.VPedDocumentType).HasColumnName("VPEDDOCUMENTTYPE");
+            entity.Property(x => x.VPedStateInscription).HasColumnName("VPEDSTATEINSCRIPTION");
+            entity.Property(x => x.VPedEtiqueta).HasColumnName("VPEDETIQUETA");
+            entity.Property(x => x.VPedDeliveryCompany).HasColumnName("VPEDDELIVERYCOMPANY");
+            entity.Property(x => x.VPedRastreio).HasColumnName("VPEDRASTREIO");
+            entity.Property(x => x.VPedFatEnv).HasColumnName("VPEDFATENV");
+            entity.Property(x => x.VPedDtRastreio).HasColumnName("VPEDDTRASTREIO");
+            entity.Property(x => x.VPedDtFatEnv).HasColumnName("VPEDDTFATENV");
+            entity.Property(x => x.VPedArqCxml).HasColumnName("VPEDARQCXML");
+            entity.Property(x => x.VPedDtArq).HasColumnName("VPEDDTARQ");
+            entity.Property(x => x.UsuCodReimp).HasColumnName("USUCODREIMP").HasPrecision(5, 0);
+            entity.Property(x => x.VPedMotReimp).HasColumnName("VPEDMOTREIMP");
+            entity.Property(x => x.VPedDtReimp).HasColumnName("VPEDDTREIMP");
+            entity.Property(x => x.UsuCodEtiq).HasColumnName("USUCODETIQ").HasPrecision(5, 0);
+            entity.Property(x => x.VPedDtEtiq).HasColumnName("VPEDDTETIQ");
+            entity.Property(x => x.VPedArqEti).HasColumnName("VPEDARQETI");
+            entity.Property(x => x.VPedDtArqEti).HasColumnName("VPEDDTARQETI");
+            entity.Property(x => x.UsuCodInc).HasColumnName("USUCODINC").HasPrecision(5, 0);
+            entity.Property(x => x.VPedDtReady).HasColumnName("VPEDDTREADY");
+            entity.Property(x => x.VPedDtCreate).HasColumnName("VPEDDTCREATE");
+            entity.Property(x => x.VPedTrackingNumber).HasColumnName("VPEDTRACKINGNUMBER");
+            entity.Property(x => x.VPedLastUpdateDate).HasColumnName("VPEDLASTUPDATEDATE");
+            entity.Property(x => x.VPedOrderStatusMarketplace).HasColumnName("VPEDORDERSTATUSMARKETPLACE");
+            entity.Property(x => x.VPedSyncAt).HasColumnName("VPEDSYNCAT");
+            entity.Property(x => x.VPedSyncError).HasColumnName("VPEDSYNCERROR");
+            entity.Property(x => x.VPedSyncHash).HasColumnName("VPEDSYNCHASH");
+
+            entity.HasMany(x => x.Itens)
+                .WithOne(x => x.Pedido)
+                .HasForeignKey(x => x.VPedCod)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<PedidoMarketplaceItem>(entity =>
+        {
+            entity.ToTable("VTPEDIDOITEM");
+            entity.HasKey(x => x.VPedICod);
+
+            entity.Property(x => x.VPedICod).HasColumnName("VPEDICOD");
+            entity.Property(x => x.VPedCod).HasColumnName("VPEDCOD");
+            entity.Property(x => x.VPedIProductId).HasColumnName("VPEDIPRODUCTID");
+            entity.Property(x => x.VPedIQuantity).HasColumnName("VPEDIQUANTITY");
+            entity.Property(x => x.ProdCod).HasColumnName("PRODCOD").HasPrecision(7, 0);
+            entity.Property(x => x.VPedPrice).HasColumnName("VPEDPRICE").HasPrecision(12, 2);
+            entity.Property(x => x.VPedRefId).HasColumnName("VPEDREFID");
+            entity.Property(x => x.VPedName).HasColumnName("VPEDNAME");
+            entity.Property(x => x.ItemVPrcVenda).HasColumnName("ITEMVPRCVENDA").HasPrecision(11, 2);
+            entity.Property(x => x.VPedIModelId).HasColumnName("VPEDIMODELID");
+            entity.Property(x => x.VPedISku).HasColumnName("VPEDISKU");
+            entity.Property(x => x.VPedIDiscount).HasColumnName("VPEDIDISCOUNT").HasPrecision(12, 2);
+            entity.Property(x => x.VPedITotal).HasColumnName("VPEDITOTAL").HasPrecision(12, 2);
         });
     }
 }

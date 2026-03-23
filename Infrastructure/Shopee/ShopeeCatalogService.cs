@@ -340,6 +340,136 @@ public class ShopeeCatalogService
         throw new Exception("Shopee delete item falhou sem retorno detalhado.");
     }
 
+    public async Task<IReadOnlyList<ShopeeOrderSummary>> GetOrdersUpdatedSince(
+        string accessToken,
+        int partnerId,
+        string partnerKey,
+        int shopId,
+        DateTime? dataInicial,
+        DateTime? dataFinal,
+        CancellationToken cancellationToken)
+    {
+        var inicio = (dataInicial ?? DateTime.Now.AddDays(-15)).ToUniversalTime();
+        var fim = (dataFinal ?? DateTime.Now).ToUniversalTime();
+
+        if (inicio > fim)
+            inicio = fim.AddMinutes(-15);
+
+        var pedidos = new Dictionary<string, ShopeeOrderSummary>(StringComparer.OrdinalIgnoreCase);
+        var cursor = string.Empty;
+        var continuar = true;
+
+        while (continuar)
+        {
+            var body = await SendGetRequest(
+                "/api/v2/order/get_order_list",
+                accessToken,
+                partnerId,
+                partnerKey,
+                shopId,
+                "get_order_list",
+                new Dictionary<string, string?>
+                {
+                    ["time_range_field"] = "update_time",
+                    ["time_from"] = ((DateTimeOffset)inicio).ToUnixTimeSeconds().ToString(),
+                    ["time_to"] = ((DateTimeOffset)fim).ToUnixTimeSeconds().ToString(),
+                    ["page_size"] = "100",
+                    ["cursor"] = string.IsNullOrWhiteSpace(cursor) ? null : cursor,
+                    ["response_optional_fields"] = "order_status"
+                },
+                cancellationToken
+            );
+
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            ValidarRespostaApi(root, body, "get_order_list");
+
+            if (!root.TryGetProperty("response", out var response))
+                break;
+
+            if (response.TryGetProperty("order_list", out var orderList))
+            {
+                foreach (var order in orderList.EnumerateArray())
+                {
+                    var orderSn = GetString(order, "order_sn");
+
+                    if (string.IsNullOrWhiteSpace(orderSn))
+                        continue;
+
+                    pedidos[orderSn] = new ShopeeOrderSummary
+                    {
+                        OrderSn = orderSn,
+                        CreateTime = GetDateTime(order, "create_time"),
+                        UpdateTime = GetDateTime(order, "update_time"),
+                        OrderStatus = GetString(order, "order_status")
+                    };
+                }
+            }
+
+            continuar = response.TryGetProperty("more", out var moreElement) && moreElement.ValueKind == JsonValueKind.True;
+            cursor = response.TryGetProperty("next_cursor", out var cursorElement)
+                ? cursorElement.GetString() ?? string.Empty
+                : string.Empty;
+
+            if (string.IsNullOrWhiteSpace(cursor))
+                continuar = false;
+        }
+
+        return pedidos.Values
+            .OrderBy(x => x.UpdateTime ?? x.CreateTime)
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<ShopeeOrderDetail>> GetOrderDetails(
+        string accessToken,
+        int partnerId,
+        string partnerKey,
+        int shopId,
+        IReadOnlyCollection<string> orderSns,
+        CancellationToken cancellationToken)
+    {
+        var detalhes = new List<ShopeeOrderDetail>();
+        var lotes = orderSns
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Chunk(50);
+
+        foreach (var lote in lotes)
+        {
+            var body = await SendGetRequest(
+                "/api/v2/order/get_order_detail",
+                accessToken,
+                partnerId,
+                partnerKey,
+                shopId,
+                "get_order_detail",
+                new Dictionary<string, string?>
+                {
+                    ["order_sn_list"] = string.Join(",", lote),
+                    ["response_optional_fields"] = "buyer_user_id,recipient_address,item_list,total_amount,estimated_shipping_fee,actual_shipping_fee,order_status,package_list,create_time,update_time"
+                },
+                cancellationToken
+            );
+
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            ValidarRespostaApi(root, body, "get_order_detail");
+
+            if (!root.TryGetProperty("response", out var response)
+                || !response.TryGetProperty("order_list", out var orderList))
+            {
+                continue;
+            }
+
+            foreach (var order in orderList.EnumerateArray())
+            {
+                detalhes.Add(ParseOrderDetail(order));
+            }
+        }
+
+        return detalhes;
+    }
+
     public async Task<long> ResolveLogisticsChannelId(
         string accessToken,
         int partnerId,
@@ -843,6 +973,186 @@ public class ShopeeCatalogService
         return stdout;
     }
 
+    private async Task<string> SendGetRequest(
+        string path,
+        string accessToken,
+        int partnerId,
+        string partnerKey,
+        int shopId,
+        string operation,
+        IReadOnlyDictionary<string, string?> queryParams,
+        CancellationToken cancellationToken)
+    {
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var sign = ShopeeSigner.Generate(partnerKey, $"{partnerId}{path}{timestamp}{accessToken}{shopId}");
+        var baseUrl = BuildSignedUrl(path, partnerId, timestamp, sign, accessToken, shopId);
+        var extraQuery = string.Join(
+            "&",
+            queryParams
+                .Where(x => !string.IsNullOrWhiteSpace(x.Value))
+                .Select(x => $"{Uri.EscapeDataString(x.Key)}={Uri.EscapeDataString(x.Value!)}"));
+        var url = string.IsNullOrWhiteSpace(extraQuery)
+            ? baseUrl
+            : $"{baseUrl}&{extraQuery}";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        var response = await _http.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if ((int)response.StatusCode == 405)
+            return await SendGetWithCurl(url, operation, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+            throw new Exception($"Shopee {operation} falhou. Status: {(int)response.StatusCode}. Url: {url}. Resposta: {body}");
+
+        return body;
+    }
+
+    private static void ValidarRespostaApi(JsonElement root, string body, string operation)
+    {
+        if (root.TryGetProperty("error", out var errorElement))
+        {
+            var error = errorElement.GetString();
+
+            if (!string.IsNullOrWhiteSpace(error))
+                throw new Exception($"Shopee {operation} rejeitou a resposta. Body: {body}");
+        }
+    }
+
+    private static ShopeeOrderDetail ParseOrderDetail(JsonElement order)
+    {
+        var detalhe = new ShopeeOrderDetail
+        {
+            OrderSn = GetString(order, "order_sn") ?? string.Empty,
+            CreateTime = GetDateTime(order, "create_time"),
+            UpdateTime = GetDateTime(order, "update_time"),
+            OrderStatus = GetString(order, "order_status"),
+            BuyerUserId = GetString(order, "buyer_user_id"),
+            TotalAmount = GetDecimal(order, "total_amount"),
+            EstimatedShippingFee = GetDecimal(order, "estimated_shipping_fee"),
+            ActualShippingFee = GetDecimal(order, "actual_shipping_fee")
+        };
+
+        if (order.TryGetProperty("recipient_address", out var recipient))
+        {
+            detalhe.Recipient = new ShopeeRecipientAddress
+            {
+                Name = GetString(recipient, "name"),
+                Phone = GetString(recipient, "phone"),
+                Town = GetString(recipient, "town"),
+                District = GetString(recipient, "district"),
+                City = GetString(recipient, "city"),
+                State = GetString(recipient, "state"),
+                ZipCode = GetString(recipient, "zipcode"),
+                FullAddress = GetString(recipient, "full_address")
+            };
+        }
+
+        if (order.TryGetProperty("package_list", out var packages))
+        {
+            foreach (var package in packages.EnumerateArray())
+            {
+                detalhe.PackageList.Add(new ShopeeOrderPackage
+                {
+                    ShippingCarrier = GetString(package, "shipping_carrier"),
+                    TrackingNumber = GetString(package, "tracking_number")
+                });
+            }
+        }
+
+        if (order.TryGetProperty("item_list", out var itemList))
+        {
+            foreach (var item in itemList.EnumerateArray())
+            {
+                var quantidade = GetInt(item, "model_quantity_purchased")
+                    ?? GetInt(item, "quantity_purchased")
+                    ?? 0;
+                var precoUnitario = GetDecimal(item, "model_discounted_price")
+                    ?? GetDecimal(item, "model_original_price")
+                    ?? GetDecimal(item, "item_price")
+                    ?? 0m;
+                var precoOriginal = GetDecimal(item, "model_original_price")
+                    ?? GetDecimal(item, "original_price")
+                    ?? precoUnitario;
+                var desconto = Math.Max(0m, precoOriginal - precoUnitario);
+
+                detalhe.ItemList.Add(new ShopeeOrderItem
+                {
+                    ItemId = GetString(item, "item_id"),
+                    ModelId = GetString(item, "model_id"),
+                    ItemSku = GetString(item, "item_sku"),
+                    ModelSku = GetString(item, "model_sku"),
+                    ItemName = GetString(item, "item_name"),
+                    Quantity = quantidade,
+                    Price = precoUnitario,
+                    Discount = desconto > 0m ? desconto : null
+                });
+            }
+        }
+
+        return detalhe;
+    }
+
+    private static string? GetString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+            return null;
+
+        return property.ValueKind switch
+        {
+            JsonValueKind.String => property.GetString(),
+            JsonValueKind.Number => property.ToString(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            _ => null
+        };
+    }
+
+    private static DateTime? GetDateTime(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+            return null;
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out var unix))
+            return DateTimeOffset.FromUnixTimeSeconds(unix).LocalDateTime;
+
+        if (property.ValueKind == JsonValueKind.String && DateTime.TryParse(property.GetString(), out var parsed))
+            return parsed;
+
+        return null;
+    }
+
+    private static decimal? GetDecimal(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+            return null;
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetDecimal(out var valor))
+            return valor;
+
+        if (property.ValueKind == JsonValueKind.String
+            && decimal.TryParse(property.GetString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+    private static int? GetInt(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+            return null;
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var valor))
+            return valor;
+
+        if (property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), out var parsed))
+            return parsed;
+
+        return null;
+    }
+
     private string BuildSignedUrl(
         string path,
         int partnerId,
@@ -1068,4 +1378,57 @@ public class ShopeeDeleteItemRequest
 {
     [JsonPropertyName("item_id")]
     public long ItemId { get; set; }
+}
+
+public class ShopeeOrderSummary
+{
+    public string OrderSn { get; set; } = "";
+    public DateTime? CreateTime { get; set; }
+    public DateTime? UpdateTime { get; set; }
+    public string? OrderStatus { get; set; }
+}
+
+public class ShopeeOrderDetail
+{
+    public string OrderSn { get; set; } = "";
+    public DateTime? CreateTime { get; set; }
+    public DateTime? UpdateTime { get; set; }
+    public string? OrderStatus { get; set; }
+    public string? BuyerUserId { get; set; }
+    public decimal? TotalAmount { get; set; }
+    public decimal? EstimatedShippingFee { get; set; }
+    public decimal? ActualShippingFee { get; set; }
+    public ShopeeRecipientAddress? Recipient { get; set; }
+    public List<ShopeeOrderPackage> PackageList { get; set; } = [];
+    public List<ShopeeOrderItem> ItemList { get; set; } = [];
+}
+
+public class ShopeeRecipientAddress
+{
+    public string? Name { get; set; }
+    public string? Phone { get; set; }
+    public string? Town { get; set; }
+    public string? District { get; set; }
+    public string? City { get; set; }
+    public string? State { get; set; }
+    public string? ZipCode { get; set; }
+    public string? FullAddress { get; set; }
+}
+
+public class ShopeeOrderPackage
+{
+    public string? ShippingCarrier { get; set; }
+    public string? TrackingNumber { get; set; }
+}
+
+public class ShopeeOrderItem
+{
+    public string? ItemId { get; set; }
+    public string? ModelId { get; set; }
+    public string? ItemSku { get; set; }
+    public string? ModelSku { get; set; }
+    public string? ItemName { get; set; }
+    public int Quantity { get; set; }
+    public decimal Price { get; set; }
+    public decimal? Discount { get; set; }
 }
