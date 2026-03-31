@@ -9,6 +9,7 @@ namespace Application.Services;
 public class PedidoSyncService
 {
     private sealed record ProdutoPedidoLookup(decimal? Codigo, decimal? PrecoVenda);
+    private sealed record EnderecoPedido(string? Street, string? Number, string? Neighborhood, string? Complement);
 
     private static readonly Dictionary<string, string> Ufs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -69,6 +70,7 @@ public class PedidoSyncService
 
         var dataInicial = sync.SincDtPedidos ?? DateTime.Now.AddDays(-15);
         var dataFinal = DateTime.Now;
+        var dataCheckpoint = DateTime.Now;
 
         _logger.LogInformation(
             "Buscando pedidos Shopee atualizados entre {inicio} e {fim}",
@@ -88,7 +90,7 @@ public class PedidoSyncService
 
         if (pedidosPendentes.Count == 0)
         {
-            sync.SincDtPedidos = dataFinal;
+            sync.SincDtPedidos = dataCheckpoint;
             await _db.SaveChangesAsync(cancellationToken);
             return 0;
         }
@@ -104,14 +106,14 @@ public class PedidoSyncService
 
         if (detalhes.Count == 0)
         {
-            sync.SincDtPedidos = pedidosPendentes.Max(x => x.UpdateTime ?? x.CreateTime) ?? dataFinal;
+            sync.SincDtPedidos = dataCheckpoint;
             await _db.SaveChangesAsync(cancellationToken);
             return 0;
         }
 
         await UpsertPedidos(detalhes, cancellationToken);
 
-        sync.SincDtPedidos = detalhes.Max(x => x.UpdateTime ?? x.CreateTime) ?? dataFinal;
+        sync.SincDtPedidos = dataCheckpoint;
         await _db.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation(
@@ -224,10 +226,12 @@ public class PedidoSyncService
     private static void MapearPedido(PedidoMarketplace pedido, ShopeeOrderDetail detalhe)
     {
         var nome = detalhe.Recipient?.Name?.Trim();
+        var endereco = SepararEndereco(detalhe.Recipient);
+        var enderecoMascarado = EnderecoMascarado(endereco, detalhe.Recipient);
         var primeiroNome = ExtrairPrimeiroNome(nome);
         var sobrenome = ExtrairSobrenome(nome);
         var totalItens = detalhe.ItemList.Sum(x => x.Price * Math.Max(1, x.Quantity));
-        var valorFrete = detalhe.ActualShippingFee ?? detalhe.EstimatedShippingFee;
+        var valorFrete = ObterValorFrete(detalhe);
         var valorTotal = detalhe.TotalAmount ?? totalItens + (valorFrete ?? 0m);
         var descontos = Math.Max(0m, totalItens + (valorFrete ?? 0m) - valorTotal);
         var primeiraTransportadora = detalhe.PackageList
@@ -245,11 +249,23 @@ public class PedidoSyncService
         pedido.VPedPostalCode = SomenteNumeros(detalhe.Recipient?.ZipCode, 50);
         pedido.VPedCity = Truncar(detalhe.Recipient?.City, 50);
         pedido.VPedState = NormalizarUf(detalhe.Recipient?.State);
-        pedido.VPedStreet = Truncar(detalhe.Recipient?.FullAddress, 100);
-        pedido.VPedNeighborhood = Truncar(detalhe.Recipient?.Town ?? detalhe.Recipient?.District, 100);
-        pedido.VPedComplement = Truncar(detalhe.Recipient?.District, 100);
+
+        if (!enderecoMascarado || string.IsNullOrWhiteSpace(pedido.VPedStreet))
+            pedido.VPedStreet = Truncar(endereco.Street, 100);
+
+        if (!enderecoMascarado || string.IsNullOrWhiteSpace(pedido.VPedNumber))
+            pedido.VPedNumber = Truncar(endereco.Number, 50);
+
+        if (!enderecoMascarado || string.IsNullOrWhiteSpace(pedido.VPedNeighborhood))
+            pedido.VPedNeighborhood = Truncar(endereco.Neighborhood, 100);
+
+        if (!enderecoMascarado || string.IsNullOrWhiteSpace(pedido.VPedComplement))
+            pedido.VPedComplement = Truncar(endereco.Complement, 100);
+
         pedido.VPedVlrTotItens = decimal.Round(totalItens, 2);
-        pedido.VPedVlrDiscounts = decimal.Round(descontos, 2);
+        pedido.VPedVlrDiscounts = descontos > 0m
+            ? decimal.Round(descontos, 2)
+            : null;
         pedido.VPedVlrShipping = valorFrete.HasValue ? decimal.Round(valorFrete.Value, 2) : null;
         pedido.VPedPhone = Truncar(SomenteNumeros(detalhe.Recipient?.Phone, 50), 50);
         pedido.VPedDeliveryCompany = Truncar(primeiraTransportadora, 50);
@@ -263,6 +279,124 @@ public class PedidoSyncService
 
         if (string.IsNullOrWhiteSpace(pedido.VPedStatus))
             pedido.VPedStatus = "A";
+    }
+
+    private static decimal? ObterValorFrete(ShopeeOrderDetail detalhe)
+    {
+        if (detalhe.ActualShippingFee.HasValue && detalhe.ActualShippingFee.Value > 0)
+            return detalhe.ActualShippingFee.Value;
+
+        if (detalhe.EstimatedShippingFee.HasValue && detalhe.EstimatedShippingFee.Value > 0)
+            return detalhe.EstimatedShippingFee.Value;
+
+        return detalhe.ActualShippingFee ?? detalhe.EstimatedShippingFee;
+    }
+
+    private static bool EnderecoMascarado(EnderecoPedido endereco, ShopeeRecipientAddress? recipient)
+    {
+        var fullAddress = NormalizarTextoPedido(recipient?.FullAddress);
+
+        return ContemMascara(fullAddress)
+            || ContemMascara(endereco.Street)
+            || ContemMascara(endereco.Number)
+            || ContemMascara(endereco.Neighborhood)
+            || ContemMascara(endereco.Complement);
+    }
+
+    private static EnderecoPedido SepararEndereco(ShopeeRecipientAddress? recipient)
+    {
+        var fullAddress = NormalizarTextoPedido(recipient?.FullAddress);
+        var preferredNeighborhood = NormalizarTextoPedido(recipient?.District ?? recipient?.Town);
+        var city = NormalizarTextoPedido(recipient?.City);
+        var state = NormalizarTextoPedido(recipient?.State);
+        var zipCode = SomenteNumeros(recipient?.ZipCode, 20);
+
+        if (string.IsNullOrWhiteSpace(fullAddress))
+        {
+            return new EnderecoPedido(
+                null,
+                null,
+                preferredNeighborhood,
+                null
+            );
+        }
+
+        var partes = fullAddress
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(NormalizarTextoPedido)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToList();
+
+        while (partes.Count > 0)
+        {
+            var ultimaParte = partes[^1];
+            var ultimaParteNumeros = SomenteNumeros(ultimaParte, 20);
+
+            if (!string.IsNullOrWhiteSpace(zipCode) && ultimaParteNumeros == zipCode)
+            {
+                partes.RemoveAt(partes.Count - 1);
+                continue;
+            }
+
+            if (TextoEquivalente(ultimaParte, city) || TextoEquivalente(ultimaParte, state) || TextoEquivalente(NormalizarUf(ultimaParte), NormalizarUf(state)))
+            {
+                partes.RemoveAt(partes.Count - 1);
+                continue;
+            }
+
+            break;
+        }
+
+        if (partes.Count == 0)
+        {
+            return new EnderecoPedido(
+                Truncar(fullAddress, 100),
+                null,
+                preferredNeighborhood,
+                null
+            );
+        }
+
+        var street = partes[0];
+        string? number = null;
+        var indiceInicioComplemento = 1;
+
+        if (partes.Count > 1 && PareceNumeroEndereco(partes[1]))
+        {
+            number = partes[1];
+            indiceInicioComplemento = 2;
+        }
+        else
+        {
+            (street, number) = SepararNumeroNoFim(street);
+        }
+
+        var restantes = partes.Skip(indiceInicioComplemento).ToList();
+        string? neighborhood = preferredNeighborhood;
+
+        if (!string.IsNullOrWhiteSpace(neighborhood))
+        {
+            var indiceBairro = restantes.FindIndex(x => TextoEquivalente(x, neighborhood));
+
+            if (indiceBairro >= 0)
+                restantes.RemoveAt(indiceBairro);
+        }
+        else if (restantes.Count > 0)
+        {
+            neighborhood = restantes[0];
+            restantes.RemoveAt(0);
+        }
+
+        var complement = restantes.Count > 0
+            ? string.Join(", ", restantes)
+            : null;
+
+        return new EnderecoPedido(
+            street,
+            number,
+            neighborhood,
+            complement
+        );
     }
 
     private static ProdutoPedidoLookup? ObterProdutoVinculado(
@@ -337,6 +471,8 @@ public class PedidoSyncService
 
     private static string? SomenteNumeros(string? valor, int maxLength)
     {
+        valor = NormalizarTextoPedido(valor);
+
         if (string.IsNullOrWhiteSpace(valor))
             return null;
 
@@ -346,12 +482,76 @@ public class PedidoSyncService
 
     private static string? Truncar(string? valor, int tamanhoMaximo)
     {
+        valor = NormalizarTextoPedido(valor);
+
         if (string.IsNullOrWhiteSpace(valor))
             return valor;
 
         return valor.Length <= tamanhoMaximo
             ? valor.Trim()
             : valor.Trim()[..tamanhoMaximo];
+    }
+
+    private static string? NormalizarTextoPedido(string? valor)
+    {
+        if (string.IsNullOrWhiteSpace(valor))
+            return valor;
+
+        var normalizado = valor.Trim();
+        var decodificado = System.Net.WebUtility.UrlDecode(normalizado);
+
+        if (!string.IsNullOrWhiteSpace(decodificado))
+            normalizado = decodificado;
+
+        return normalizado
+            .Replace("\u00A0", " ", StringComparison.Ordinal)
+            .Trim();
+    }
+
+    private static bool PareceNumeroEndereco(string? valor)
+    {
+        if (string.IsNullOrWhiteSpace(valor))
+            return false;
+
+        var texto = valor.Trim();
+
+        if (string.Equals(texto, "S/N", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return System.Text.RegularExpressions.Regex.IsMatch(texto, @"^\d+[A-Za-z0-9\-\/]*$");
+    }
+
+    private static (string? Street, string? Number) SepararNumeroNoFim(string? valor)
+    {
+        if (string.IsNullOrWhiteSpace(valor))
+            return (valor, null);
+
+        var match = System.Text.RegularExpressions.Regex.Match(valor, @"^(.*?)[,\s]+(\d+[A-Za-z0-9\-\/]*)$");
+
+        if (!match.Success)
+            return (valor, null);
+
+        return (
+            match.Groups[1].Value.Trim(),
+            match.Groups[2].Value.Trim()
+        );
+    }
+
+    private static bool TextoEquivalente(string? esquerda, string? direita)
+    {
+        if (string.IsNullOrWhiteSpace(esquerda) || string.IsNullOrWhiteSpace(direita))
+            return false;
+
+        return string.Equals(
+            RemoverAcentos(esquerda).Trim(),
+            RemoverAcentos(direita).Trim(),
+            StringComparison.OrdinalIgnoreCase
+        );
+    }
+
+    private static bool ContemMascara(string? valor)
+    {
+        return !string.IsNullOrWhiteSpace(valor) && valor.Contains('*');
     }
 
     private static string RemoverAcentos(string valor)

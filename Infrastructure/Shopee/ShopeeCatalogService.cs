@@ -351,9 +351,21 @@ public class ShopeeCatalogService
     {
         var inicio = (dataInicial ?? DateTime.Now.AddDays(-15)).ToUniversalTime();
         var fim = (dataFinal ?? DateTime.Now).ToUniversalTime();
+        var agoraUtc = DateTime.UtcNow;
 
-        if (inicio > fim)
-            inicio = fim.AddMinutes(-15);
+        if (fim > agoraUtc)
+            fim = agoraUtc;
+
+        if (inicio >= fim)
+            inicio = fim.AddMinutes(-5);
+
+        var janelaMaxima = TimeSpan.FromDays(15) - TimeSpan.FromMinutes(1);
+
+        if (fim - inicio > janelaMaxima)
+            inicio = fim - janelaMaxima;
+
+        if (inicio >= fim)
+            inicio = fim.AddMinutes(-1);
 
         var pedidos = new Dictionary<string, ShopeeOrderSummary>(StringComparer.OrdinalIgnoreCase);
         var cursor = string.Empty;
@@ -688,6 +700,8 @@ public class ShopeeCatalogService
             FileName = "curl.exe",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
             UseShellExecute = false,
             CreateNoWindow = true
         };
@@ -807,6 +821,8 @@ public class ShopeeCatalogService
                 FileName = "curl.exe",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
@@ -855,6 +871,8 @@ public class ShopeeCatalogService
             FileName = "curl.exe",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
             UseShellExecute = false,
             CreateNoWindow = true
         };
@@ -907,6 +925,8 @@ public class ShopeeCatalogService
             FileName = "curl.exe",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
             UseShellExecute = false,
             CreateNoWindow = true
         };
@@ -949,6 +969,8 @@ public class ShopeeCatalogService
             FileName = "curl.exe",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
             UseShellExecute = false,
             CreateNoWindow = true
         };
@@ -1001,6 +1023,12 @@ public class ShopeeCatalogService
 
         if ((int)response.StatusCode == 405)
             return await SendGetWithCurl(url, operation, cancellationToken);
+
+        if (!response.IsSuccessStatusCode
+            && PareceErroHtmlInfraestrutura(body))
+        {
+            return await SendGetWithCurl(url, operation, cancellationToken);
+        }
 
         if (!response.IsSuccessStatusCode)
             throw new Exception($"Shopee {operation} falhou. Status: {(int)response.StatusCode}. Url: {url}. Resposta: {body}");
@@ -1151,6 +1179,16 @@ public class ShopeeCatalogService
             return parsed;
 
         return null;
+    }
+
+    private static bool PareceErroHtmlInfraestrutura(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return false;
+
+        return body.Contains("<html", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("GitHub Pages", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("Site not found", StringComparison.OrdinalIgnoreCase);
     }
 
     private string BuildSignedUrl(
