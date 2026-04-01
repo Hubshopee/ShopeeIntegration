@@ -9,102 +9,53 @@ namespace Application.Services;
 public class CadastroProdutoService
 {
     private const string BaseImageUrl = "http://loja.umec.com.br/produtos";
-
+    private const string OperacaoCadastro = "CADASTRO";
+    private const string StatusErroResolvido = "R";
+    private const string StatusPublicacaoAtiva = "A";
     private readonly IntegrationDbContext _db;
     private readonly ShopeeCatalogService _catalogService;
+    private readonly PubShopeeErroService _erroService;
     private readonly ILogger<CadastroProdutoService> _logger;
 
     public CadastroProdutoService(
         IntegrationDbContext db,
         ShopeeCatalogService catalogService,
+        PubShopeeErroService erroService,
         ILogger<CadastroProdutoService> logger)
     {
         _db = db;
         _catalogService = catalogService;
+        _erroService = erroService;
         _logger = logger;
     }
 
-    public async Task<int> ProcessarPendentes(
-        string accessToken,
+    public async Task<List<CadastroShopeePendente>> BuscarPendentes(
+        int syncShopeeId,
+        string syncConta,
         CancellationToken cancellationToken)
     {
-        var sync = await _db.SyncShopee
-            .OrderBy(x => x.Id)
-            .FirstAsync(cancellationToken);
-
-        if (!sync.PartnerId.HasValue)
-            throw new Exception("PARTNERID nao esta preenchido na SINCSHOPEE.");
-
-        if (string.IsNullOrWhiteSpace(sync.ClientSecret))
-            throw new Exception("CLIENTSECRET nao esta preenchido na SINCSHOPEE.");
-
-        if (!sync.ShopId.HasValue)
-            throw new Exception("SHOPID nao esta preenchido na SINCSHOPEE.");
-
-        var produtos = await _db.Produtos
-            .Where(x => x.DataInclusao == null)
-            .Where(x => x.Status != "ERRO" || string.IsNullOrWhiteSpace(x.Erro))
-            .OrderBy(x => x.Id)
-            .ToListAsync(cancellationToken);
-
-        _logger.LogInformation("Cadastro pendente: {total}", produtos.Count);
-
-        if (produtos.Count == 0)
-            return 0;
-
-        var codigos = produtos
-            .Where(x => x.Codigo.HasValue)
-            .Select(x => x.Codigo!.Value)
-            .Distinct()
-            .ToList();
-
-        var imagens = await _db.ImagensFtp
-            .Where(x => x.ProdCod.HasValue && codigos.Contains(x.ProdCod.Value))
-            .ToListAsync(cancellationToken);
-
-        var atributos = await _db.Atributos
-            .Where(x => x.ProdCod.HasValue && codigos.Contains(x.ProdCod.Value))
-            .OrderBy(x => x.Ordem)
-            .ToListAsync(cancellationToken);
-
-        foreach (var produto in produtos)
-        {
-            try
-            {
-                await CadastrarProduto(
-                    produto,
-                    imagens.Where(x => x.ProdCod == produto.Codigo).ToList(),
-                    atributos.Where(x => x.ProdCod == produto.Codigo).ToList(),
-                    accessToken,
-                    sync.PartnerId.Value,
-                    sync.ClientSecret,
-                    sync.ShopId.Value,
-                    cancellationToken
-                );
-            }
-            catch (Exception ex)
-            {
-                produto.Status = "ERRO";
-                produto.Erro = TratarMensagemErro(ex);
-                await _db.SaveChangesAsync(cancellationToken);
-                _logger.LogError(ex, "Erro ao cadastrar produto Codigo:{codigo}", produto.Codigo);
-            }
-        }
-
-        return produtos.Count;
-    }
-
-    public async Task<List<Produto>> BuscarPendentes(CancellationToken cancellationToken)
-    {
         return await _db.Produtos
-            .Where(x => x.DataInclusao == null)
-            .Where(x => x.Status != "ERRO" || string.IsNullOrWhiteSpace(x.Erro))
+            .AsNoTracking()
+            .Where(x => x.Codigo.HasValue)
+            .Where(x => !_db.PublicacoesShopee.Any(p =>
+                p.Codigo.HasValue
+                && p.Codigo.Value == x.Codigo!.Value
+                && (p.AplCod == x.AplCod || (!p.AplCod.HasValue && !x.AplCod.HasValue))
+                && p.SyncConta == syncConta
+                && p.PubStatus == StatusPublicacaoAtiva))
+            .Where(x => !_db.PublicacoesShopeeErro.Any(e =>
+                e.Codigo == x.Codigo!.Value
+                && (e.AplCod == x.AplCod || (!e.AplCod.HasValue && !x.AplCod.HasValue))
+                && e.Operacao == OperacaoCadastro
+                && (e.StatusProcesso == null || e.StatusProcesso != StatusErroResolvido)))
             .OrderBy(x => x.Id)
+            .Select(x => new CadastroShopeePendente(x.Id, syncShopeeId, syncConta))
             .ToListAsync(cancellationToken);
     }
 
     public async Task ProcessarProduto(
         int produtoId,
+        string syncConta,
         string accessToken,
         int partnerId,
         string partnerKey,
@@ -114,13 +65,29 @@ public class CadastroProdutoService
         var produto = await _db.Produtos
             .FirstAsync(x => x.Id == produtoId, cancellationToken);
 
-        if (produto.DataInclusao == null
-            && string.Equals(produto.Status, "ERRO", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(produto.Erro))
+        if (!produto.Codigo.HasValue)
+            return;
+
+        if (await _db.PublicacoesShopee.AnyAsync(
+                x => x.Codigo.HasValue
+                    && x.Codigo.Value == produto.Codigo.Value
+                    && (x.AplCod == produto.AplCod || (!x.AplCod.HasValue && !produto.AplCod.HasValue))
+                    && x.SyncConta == syncConta
+                    && x.PubStatus == StatusPublicacaoAtiva,
+                cancellationToken))
+            return;
+
+        if (await _db.PublicacoesShopeeErro.AnyAsync(
+                x => x.Codigo == produto.Codigo.Value
+                    && (x.AplCod == produto.AplCod || (!x.AplCod.HasValue && !produto.AplCod.HasValue))
+                    && x.Operacao == OperacaoCadastro
+                    && (x.StatusProcesso == null || x.StatusProcesso != StatusErroResolvido),
+                cancellationToken))
         {
             _logger.LogInformation(
-                "Produto Codigo:{codigo} ignorado no cadastro porque possui erro pendente. Limpe o campo ERRO para tentar novamente.",
-                produto.Codigo
+                "Produto Codigo:{codigo} ignorado no cadastro da conta {conta} porque possui erro pendente de cadastro para o produto.",
+                produto.Codigo,
+                syncConta
             );
             return;
         }
@@ -142,6 +109,7 @@ public class CadastroProdutoService
 
             await CadastrarProduto(
                 produto,
+                syncConta,
                 imagens,
                 atributos,
                 accessToken,
@@ -153,8 +121,13 @@ public class CadastroProdutoService
         }
         catch (Exception ex)
         {
-            produto.Status = "ERRO";
-            produto.Erro = TratarMensagemErro(ex);
+            await _erroService.RegistrarErro(
+                produto,
+                syncConta,
+                OperacaoCadastro,
+                null,
+                TratarMensagemErro(ex),
+                cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             throw;
         }
@@ -162,6 +135,7 @@ public class CadastroProdutoService
 
     private async Task CadastrarProduto(
         Produto produto,
+        string syncConta,
         List<ImagemFtp> imagens,
         List<Atributo> atributos,
         string accessToken,
@@ -170,11 +144,10 @@ public class CadastroProdutoService
         int shopId,
         CancellationToken cancellationToken)
     {
-        if (!produto.Codigo.HasValue)
-            throw new Exception("Produto sem CODIGO.");
+        var camposObrigatoriosAusentes = ObterCamposObrigatoriosAusentes(produto);
 
-        if (!produto.CategoriaId.HasValue)
-            throw new Exception("Produto sem CATEGORIA_ID.");
+        if (camposObrigatoriosAusentes.Count > 0)
+            throw new Exception($"Campos obrigatorios vazios ou faltando: {string.Join(", ", camposObrigatoriosAusentes)}.");
 
         var titulo = Truncar(
             produto.Titulo ?? produto.Descricao ?? $"Produto {produto.Codigo}",
@@ -182,23 +155,17 @@ public class CadastroProdutoService
         );
 
         var descricao = MontarDescricao(produto, titulo);
+        var codigo = produto.Codigo.GetValueOrDefault();
+        var preco = produto.PrecoVenda.GetValueOrDefault();
+        var estoque = produto.Estoque.GetValueOrDefault();
+        var pesoKg = decimal.Round(produto.Peso.GetValueOrDefault() / 1000m, 3);
+        var categoriaId = produto.CategoriaId.GetValueOrDefault();
+        var channelIdConfigurado = produto.ChannelId.GetValueOrDefault();
+        var profundidade = produto.Profundidade.GetValueOrDefault();
+        var largura = produto.Largura.GetValueOrDefault();
+        var altura = produto.Altura.GetValueOrDefault();
 
-        var preco = produto.PrecoVenda
-            ?? produto.PrecoVarejo
-            ?? produto.PrecoPadrao;
-
-        if (!preco.HasValue || preco <= 0)
-            throw new Exception("Produto sem preco valido para cadastro.");
-
-        if (!produto.Peso.HasValue || produto.Peso <= 0)
-            throw new Exception("Produto sem peso valido para cadastro.");
-
-        var pesoKg = decimal.Round(produto.Peso.Value / 1000m, 3);
-
-        if (!produto.Largura.HasValue || !produto.Altura.HasValue || !produto.Profundidade.HasValue)
-            throw new Exception("Produto sem dimensoes completas para cadastro.");
-
-        var imageUrls = MontarUrlsImagem(produto.Codigo.Value, imagens);
+        var imageUrls = MontarUrlsImagem(codigo, imagens);
 
         if (imageUrls.Count == 0)
             throw new Exception("Produto sem imagens para cadastro.");
@@ -217,7 +184,7 @@ public class CadastroProdutoService
             partnerId,
             partnerKey,
             shopId,
-            produto.ChannelId,
+            channelIdConfigurado,
             cancellationToken
         );
 
@@ -229,22 +196,22 @@ public class CadastroProdutoService
             GtinCode = string.IsNullOrWhiteSpace(produto.Gtin) ? null : produto.Gtin.Trim(),
             Ncm = NormalizarNcm(produto.Ncm),
             Origin = string.IsNullOrWhiteSpace(produto.Origem) ? null : produto.Origem.Trim(),
-            CategoryId = produto.CategoriaId.Value,
+            CategoryId = categoriaId,
             Weight = pesoKg,
             Dimension = new ShopeeDimensionRequest
             {
-                PackageLength = NormalizarDimensao(produto.Profundidade.Value),
-                PackageWidth = NormalizarDimensao(produto.Largura.Value),
-                PackageHeight = NormalizarDimensao(produto.Altura.Value)
+                PackageLength = NormalizarDimensao(profundidade),
+                PackageWidth = NormalizarDimensao(largura),
+                PackageHeight = NormalizarDimensao(altura)
             },
-            Price = preco.Value,
-            OriginalPrice = preco.Value,
-            Stock = produto.Estoque ?? 0,
+            Price = preco,
+            OriginalPrice = preco,
+            Stock = estoque,
             SellerStock =
             [
                 new ShopeeSellerStockRequest
                 {
-                    Stock = produto.Estoque ?? 0
+                    Stock = estoque
                 }
             ],
             Image = new ShopeeImageRequest
@@ -287,17 +254,58 @@ public class CadastroProdutoService
             cancellationToken
         );
 
-        produto.ItemId = itemId;
+        var publicacao = await _db.PublicacoesShopee
+            .FirstOrDefaultAsync(
+                x => x.Codigo.HasValue
+                    && x.Codigo.Value == produto.Codigo.Value
+                    && (x.AplCod == produto.AplCod || (!x.AplCod.HasValue && !produto.AplCod.HasValue))
+                    && x.SyncConta == syncConta,
+                cancellationToken);
+
+        if (publicacao == null)
+        {
+            publicacao = new PubShopee
+            {
+                Codigo = produto.Codigo.Value,
+                AplCod = produto.AplCod,
+                SyncConta = syncConta
+            };
+
+            await _db.PublicacoesShopee.AddAsync(publicacao, cancellationToken);
+        }
+
+        publicacao.ItemId = NormalizarItemIdPublicacao(itemId);
+        publicacao.AplCod = produto.AplCod;
+        publicacao.PubDtInc = DateTime.Now;
+        publicacao.PubStatus = StatusPublicacaoAtiva;
         produto.DataInclusao = DateTime.Now;
         produto.DataEstoque = null;
         produto.DataPreco = null;
         produto.DataDados = null;
-        produto.Status = "CADASTRADO";
-        produto.Erro = null;
+
+        await _erroService.ResolverErro(
+            produto.Codigo.Value,
+            produto.AplCod,
+            syncConta,
+            OperacaoCadastro,
+            cancellationToken);
 
         await _db.SaveChangesAsync(cancellationToken);
 
-        _logger.LogInformation("Produto cadastrado Codigo:{codigo} ItemId:{itemId}", produto.Codigo, itemId);
+        _logger.LogInformation(
+            "Produto cadastrado Codigo:{codigo} Conta:{conta} ItemId:{itemId}",
+            produto.Codigo,
+            syncConta,
+            itemId
+        );
+    }
+
+    private static int NormalizarItemIdPublicacao(long itemId)
+    {
+        if (itemId > int.MaxValue || itemId < int.MinValue)
+            throw new Exception("ITEMID retornado pela Shopee excede o limite atual da tabela PUBSHOPEE.");
+
+        return (int)itemId;
     }
 
     private static List<string> MontarUrlsImagem(decimal codigo, List<ImagemFtp> imagens)
@@ -333,7 +341,6 @@ public class CadastroProdutoService
     private static string MontarDescricao(Produto produto, string titulo)
     {
         var descricao = produto.DescricaoDetalhada
-            ?? produto.DescricaoShopee
             ?? produto.Descricao
             ?? titulo;
 
@@ -343,7 +350,6 @@ public class CadastroProdutoService
             return descricao;
 
         var complemento = produto.DescricaoDetalhada
-            ?? produto.DescricaoShopee
             ?? produto.Descricao
             ?? titulo;
 
@@ -382,6 +388,58 @@ public class CadastroProdutoService
             return texto;
 
         return texto[..maximo];
+    }
+
+    private static List<string> ObterCamposObrigatoriosAusentes(Produto produto)
+    {
+        var campos = new List<string>();
+
+        if (!produto.Codigo.HasValue || produto.Codigo.Value <= 0)
+            campos.Add("CODIGO");
+
+        if (string.IsNullOrWhiteSpace(produto.Sku))
+            campos.Add("SKU");
+
+        if (string.IsNullOrWhiteSpace(produto.Fabricante))
+            campos.Add("FABRICANTE");
+
+        if (!produto.Peso.HasValue || produto.Peso.Value <= 0)
+            campos.Add("PESO");
+
+        if (!produto.PrecoVenda.HasValue || produto.PrecoVenda.Value <= 0)
+            campos.Add("PRECO_VENDA");
+
+        if (!produto.Estoque.HasValue)
+            campos.Add("ESTOQUE");
+
+        if (string.IsNullOrWhiteSpace(produto.DescricaoDetalhada))
+            campos.Add("DESCRICAO_DETALHADA");
+
+        if (string.IsNullOrWhiteSpace(produto.Fornecedor))
+            campos.Add("FORNECEDOR");
+
+        if (!produto.Largura.HasValue || produto.Largura.Value <= 0)
+            campos.Add("LARGURA");
+
+        if (!produto.Altura.HasValue || produto.Altura.Value <= 0)
+            campos.Add("ALTURA");
+
+        if (!produto.Profundidade.HasValue || produto.Profundidade.Value <= 0)
+            campos.Add("PROFUNDIDADE");
+
+        if (string.IsNullOrWhiteSpace(produto.Gtin))
+            campos.Add("GTIN");
+
+        if (!produto.CategoriaId.HasValue || produto.CategoriaId.Value <= 0)
+            campos.Add("CATEGORIA_ID");
+
+        if (!produto.MarcaId.HasValue || produto.MarcaId.Value <= 0)
+            campos.Add("MARCA_ID");
+
+        if (!produto.ChannelId.HasValue || produto.ChannelId.Value <= 0)
+            campos.Add("CHANNEL_ID");
+
+        return campos;
     }
 
     private static string? NormalizarNcm(string? ncm)
@@ -481,4 +539,6 @@ public class CadastroProdutoService
 
         return Truncar(ex.Message, 2000);
     }
+
+    public sealed record CadastroShopeePendente(int ProdutoId, int SyncShopeeId, string SyncConta);
 }

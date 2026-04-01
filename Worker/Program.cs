@@ -48,6 +48,7 @@ builder.Services.AddHttpClient<ShopeeCatalogService>()
 });
 
 builder.Services.AddScoped<TokenSyncService>();
+builder.Services.AddScoped<PubShopeeErroService>();
 builder.Services.AddScoped<CadastroProdutoService>();
 builder.Services.AddScoped<EstoqueSyncService>();
 builder.Services.AddScoped<PrecoSyncService>();

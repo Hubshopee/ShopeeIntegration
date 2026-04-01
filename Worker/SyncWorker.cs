@@ -85,10 +85,18 @@ public class SyncWorker : BackgroundService
     private async Task ValidarTokenNaInicializacao(CancellationToken stoppingToken)
     {
         using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<IntegrationDbContext>();
         var tokenService = scope.ServiceProvider.GetRequiredService<TokenSyncService>();
+        var contas = await db.SyncShopee
+            .AsNoTracking()
+            .OrderBy(x => x.Id)
+            .Select(x => x.Id)
+            .ToListAsync(stoppingToken);
 
         _logger.LogInformation("Validando token na inicializacao do worker");
-        await tokenService.ObterTokenValido();
+
+        foreach (var contaId in contas)
+            await tokenService.ObterTokenValido(contaId, stoppingToken);
     }
 
     private void LogarAgendaConfigurada()
@@ -157,9 +165,14 @@ public class SyncWorker : BackgroundService
             var pedidoService = scope.ServiceProvider.GetRequiredService<PedidoSyncService>();
             var db = scope.ServiceProvider.GetRequiredService<IntegrationDbContext>();
 
-            var sync = await db.SyncShopee
+            var contasShopee = await db.SyncShopee
                 .OrderBy(x => x.Id)
-                .FirstAsync(stoppingToken);
+                .ToListAsync(stoppingToken);
+
+            var sync = contasShopee
+                .OrderBy(x => x.Id)
+                .FirstOrDefault()
+                ?? throw new Exception("Nenhuma conta encontrada na SINCSHOPEE.");
 
             if (!sync.PartnerId.HasValue)
                 throw new Exception("PARTNERID nao esta preenchido na SINCSHOPEE.");
@@ -172,11 +185,20 @@ public class SyncWorker : BackgroundService
 
             var executarCargaInicial = !_cargaInicialExecutada;
 
-            var filaCadastro = (executarCargaInicial || DeveExecutarCadastro())
-                ? (await cadastroProdutoService.BuscarPendentes(stoppingToken))
-                    .Select(x => CriarItemFila(TipoFila.Cadastro, x))
-                    .ToList()
-                : [];
+            var filaCadastro = new List<ItemFila>();
+
+            if (executarCargaInicial || DeveExecutarCadastro())
+            {
+                foreach (var conta in contasShopee)
+                {
+                    if (string.IsNullOrWhiteSpace(conta.SyncConta))
+                        throw new Exception($"SINCCONTA nao esta preenchido na SINCSHOPEE ID {conta.Id}.");
+
+                    filaCadastro.AddRange(
+                        (await cadastroProdutoService.BuscarPendentes(conta.Id, conta.SyncConta, stoppingToken))
+                        .Select(x => CriarItemFila(TipoFila.Cadastro, x)));
+                }
+            }
 
             var filaExclusao = (executarCargaInicial || DeveExecutarExclusao())
                 ? (await exclusaoService.BuscarPendentes(stoppingToken))
@@ -460,40 +482,65 @@ public class SyncWorker : BackgroundService
                             rateLocksPorTipo[item.Tipo].Release();
                         }
 
-                        string accessToken;
-                        await tokenLock.WaitAsync(cancellationToken);
-                        try
-                        {
-                            accessToken = await tokenService.ObterTokenValido();
-                        }
-                        finally
-                        {
-                            tokenLock.Release();
-                        }
-
                         var dataSincronizacao = DateTime.Now;
 
                         switch (item.Tipo)
                         {
                             case TipoFila.Cadastro:
+                                if (!item.SyncShopeeId.HasValue || string.IsNullOrWhiteSpace(item.SyncConta))
+                                    throw new Exception("Fila de cadastro sem conta SINCSHOPEE vinculada.");
+
+                                var db = scope.ServiceProvider.GetRequiredService<IntegrationDbContext>();
+                                var syncCadastro = await db.SyncShopee
+                                    .AsNoTracking()
+                                    .FirstAsync(x => x.Id == item.SyncShopeeId.Value, cancellationToken);
+
+                                if (!syncCadastro.PartnerId.HasValue)
+                                    throw new Exception($"PARTNERID nao esta preenchido na SINCSHOPEE ID {syncCadastro.Id}.");
+
+                                if (string.IsNullOrWhiteSpace(syncCadastro.ClientSecret))
+                                    throw new Exception($"CLIENTSECRET nao esta preenchido na SINCSHOPEE ID {syncCadastro.Id}.");
+
+                                if (!syncCadastro.ShopId.HasValue)
+                                    throw new Exception($"SHOPID nao esta preenchido na SINCSHOPEE ID {syncCadastro.Id}.");
+
+                                string accessTokenCadastro;
+                                await tokenLock.WaitAsync(cancellationToken);
+                                try
+                                {
+                                    accessTokenCadastro = await tokenService.ObterTokenValido(syncCadastro.Id, cancellationToken);
+                                }
+                                finally
+                                {
+                                    tokenLock.Release();
+                                }
+
                                 await scope.ServiceProvider.GetRequiredService<CadastroProdutoService>()
-                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, cancellationToken);
+                                    .ProcessarProduto(
+                                        item.ProdutoId,
+                                        item.SyncConta,
+                                        accessTokenCadastro,
+                                        syncCadastro.PartnerId.Value,
+                                        syncCadastro.ClientSecret,
+                                        syncCadastro.ShopId.Value,
+                                        cancellationToken
+                                    );
                                 break;
                             case TipoFila.Estoque:
                                 await scope.ServiceProvider.GetRequiredService<EstoqueSyncService>()
-                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, dataSincronizacao, cancellationToken);
+                                    .ProcessarProduto(item.ProdutoId, dataSincronizacao, cancellationToken);
                                 break;
                             case TipoFila.Preco:
                                 await scope.ServiceProvider.GetRequiredService<PrecoSyncService>()
-                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, dataSincronizacao, cancellationToken);
+                                    .ProcessarProduto(item.ProdutoId, dataSincronizacao, cancellationToken);
                                 break;
                             case TipoFila.Exclusao:
                                 await scope.ServiceProvider.GetRequiredService<ExclusaoSyncService>()
-                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, dataSincronizacao, cancellationToken);
+                                    .ProcessarProduto(item.ProdutoId, dataSincronizacao, cancellationToken);
                                 break;
                             case TipoFila.Dados:
                                 await scope.ServiceProvider.GetRequiredService<DadosSyncService>()
-                                    .ProcessarProduto(item.ProdutoId, accessToken, partnerId, partnerKey, shopId, dataSincronizacao, cancellationToken);
+                                    .ProcessarProduto(item.ProdutoId, dataSincronizacao, cancellationToken);
                                 break;
                         }
 
@@ -569,7 +616,7 @@ public class SyncWorker : BackgroundService
         var produto = await db.Produtos
             .AsNoTracking()
             .Where(x => x.Id == item.ProdutoId)
-            .Select(x => new { x.Id, x.Codigo, x.ItemId })
+            .Select(x => new { x.Id, x.Codigo })
             .FirstOrDefaultAsync(cancellationToken);
 
         var codigo = produto?.Codigo?.ToString() ?? item.ProdutoId.ToString();
@@ -584,10 +631,9 @@ public class SyncWorker : BackgroundService
         };
 
         _logger.LogWarning(
-            "Produto {codigo} nao encontrado na Shopee para {acao}. ItemId local: {itemId}",
+            "Produto {codigo} nao encontrado na Shopee para {acao}.",
             codigo,
-            acao,
-            produto?.ItemId
+            acao
         );
     }
 
@@ -620,7 +666,7 @@ public class SyncWorker : BackgroundService
         var produto = await db.Produtos
             .AsNoTracking()
             .Where(x => x.Id == item.ProdutoId)
-            .Select(x => new { x.Id, x.Codigo, x.ItemId })
+            .Select(x => new { x.Id, x.Codigo })
             .FirstOrDefaultAsync(cancellationToken);
 
         var codigo = produto?.Codigo?.ToString() ?? item.ProdutoId.ToString();
@@ -685,7 +731,12 @@ public class SyncWorker : BackgroundService
             _ => null
         };
 
-        return new ItemFila(tipo, produto.Id, dataReferencia);
+        return new ItemFila(tipo, produto.Id, dataReferencia, null, null);
+    }
+
+    private static ItemFila CriarItemFila(TipoFila tipo, CadastroProdutoService.CadastroShopeePendente produto)
+    {
+        return new ItemFila(tipo, produto.ProdutoId, null, produto.SyncShopeeId, produto.SyncConta);
     }
 
     private bool DeveExecutarCadastro()
@@ -773,7 +824,7 @@ public class SyncWorker : BackgroundService
         Cadastro
     }
 
-    private sealed record ItemFila(TipoFila Tipo, int ProdutoId, DateTime? DataReferencia);
+    private sealed record ItemFila(TipoFila Tipo, int ProdutoId, DateTime? DataReferencia, int? SyncShopeeId, string? SyncConta);
 
     private sealed record ResultadoFila(TipoFila Tipo, DateTime? DataReferencia);
 }

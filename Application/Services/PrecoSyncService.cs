@@ -7,34 +7,41 @@ namespace Application.Services;
 
 public class PrecoSyncService
 {
+    private const string OperacaoPreco = "PRECO";
+    private const string StatusPublicacaoAtiva = "A";
+
     private readonly IntegrationDbContext _db;
     private readonly ShopeeCatalogService _catalogService;
+    private readonly TokenSyncService _tokenSyncService;
+    private readonly PubShopeeErroService _erroService;
 
-    public PrecoSyncService(IntegrationDbContext db, ShopeeCatalogService catalogService)
+    public PrecoSyncService(
+        IntegrationDbContext db,
+        ShopeeCatalogService catalogService,
+        TokenSyncService tokenSyncService,
+        PubShopeeErroService erroService)
     {
         _db = db;
         _catalogService = catalogService;
+        _tokenSyncService = tokenSyncService;
+        _erroService = erroService;
     }
 
     public async Task<List<Produto>> BuscarPendentes(CancellationToken cancellationToken, bool ignorarCheckpoint = false)
     {
-        var sync = await _db.SyncShopee
-            .OrderBy(x => x.Id)
-            .FirstAsync(cancellationToken);
-
-        if (ignorarCheckpoint)
-        {
-            return await _db.Produtos
-                .Where(x =>
-                    x.ItemId != null
-                    && x.DataPreco != null
-                    && (!sync.SincDtPreco.HasValue || x.DataPreco > sync.SincDtPreco))
-                .OrderBy(x => x.DataPreco)
-                .ToListAsync(cancellationToken);
-        }
+        var checkpoint = ignorarCheckpoint
+            ? null
+            : await _db.SyncShopee.MinAsync(x => x.SincDtPreco, cancellationToken);
 
         return await _db.Produtos
-            .Where(x => x.ItemId != null && x.DataPreco != null && x.DataPreco > sync.SincDtPreco)
+            .Where(x => x.Codigo.HasValue && x.DataPreco != null)
+            .Where(x => !checkpoint.HasValue || x.DataPreco > checkpoint)
+            .Where(x => _db.PublicacoesShopee.Any(p =>
+                p.Codigo.HasValue
+                && p.Codigo.Value == x.Codigo!.Value
+                && (p.AplCod == x.AplCod || (!p.AplCod.HasValue && !x.AplCod.HasValue))
+                && p.ItemId.HasValue
+                && p.PubStatus == StatusPublicacaoAtiva))
             .OrderBy(x => x.DataPreco)
             .ToListAsync(cancellationToken);
     }
@@ -52,48 +59,21 @@ public class PrecoSyncService
         if (!usarDataAtual && !ultimaData.HasValue)
             return;
 
-        var sync = await _db.SyncShopee
-            .OrderBy(x => x.Id)
-            .FirstAsync(cancellationToken);
+        var sincronizacoes = await _db.SyncShopee.ToListAsync(cancellationToken);
 
-        sync.SincDtPreco = ultimaData!.Value;
+        foreach (var sync in sincronizacoes)
+            sync.SincDtPreco = ultimaData!.Value;
 
         await _db.SaveChangesAsync(cancellationToken);
     }
 
     public async Task<int> ProcessarPendentes(
-        string accessToken,
-        int partnerId,
-        string partnerKey,
-        int shopId,
         CancellationToken cancellationToken)
     {
         var produtos = await BuscarPendentes(cancellationToken);
 
         foreach (var produto in produtos)
-        {
-            if (!produto.ItemId.HasValue)
-                continue;
-
-            var preco = produto.PrecoVenda ?? produto.PrecoVarejo ?? produto.PrecoPadrao;
-
-            if (!preco.HasValue || preco <= 0)
-                continue;
-
-            await _catalogService.UpdatePrice(
-                accessToken,
-                partnerId,
-                partnerKey,
-                shopId,
-                new ShopeeUpdatePriceRequest
-                {
-                    ItemId = produto.ItemId.Value,
-                    Price = preco.Value,
-                    OriginalPrice = preco.Value
-                },
-                cancellationToken
-            );
-        }
+            await ProcessarProduto(produto.Id, null, cancellationToken);
 
         if (produtos.Count > 0)
             await AtualizarCheckpoint(produtos, cancellationToken);
@@ -103,41 +83,130 @@ public class PrecoSyncService
 
     public async Task ProcessarProduto(
         int produtoId,
-        string accessToken,
-        int partnerId,
-        string partnerKey,
-        int shopId,
         DateTime? dataSincronizacao,
         CancellationToken cancellationToken)
     {
         var produto = await _db.Produtos
             .FirstAsync(x => x.Id == produtoId, cancellationToken);
 
-        if (!produto.ItemId.HasValue)
+        if (!produto.Codigo.HasValue)
+            return;
+
+        var dataAtualizacao = dataSincronizacao ?? DateTime.Now;
+        var publicacoes = await BuscarPublicacoes(produto.Codigo.Value, produto.AplCod, cancellationToken);
+
+        if (publicacoes.Count == 0)
             return;
 
         var preco = produto.PrecoVenda ?? produto.PrecoVarejo ?? produto.PrecoPadrao;
 
         if (!preco.HasValue || preco <= 0)
-            return;
+        {
+            await RegistrarErroValidacao(
+                produto,
+                publicacoes,
+                "Produto sem preco valido. Revise PRECO_VENDA, PRECO_VAREJO ou PRECO_PADRAO.",
+                cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            throw new Exception("Produto sem preco valido para atualizacao.");
+        }
 
-        var dataAtualizacao = dataSincronizacao ?? DateTime.Now;
+        Exception? erro = null;
 
-        await _catalogService.UpdatePrice(
-            accessToken,
-            partnerId,
-            partnerKey,
-            shopId,
-            new ShopeeUpdatePriceRequest
+        foreach (var publicacao in publicacoes)
+        {
+            try
             {
-                ItemId = produto.ItemId.Value,
-                Price = preco.Value,
-                OriginalPrice = preco.Value
-            },
-            cancellationToken
-        );
+                var accessToken = await _tokenSyncService.ObterTokenValido(publicacao.SyncId, cancellationToken);
 
-        produto.DataPreco = dataAtualizacao;
+                await _catalogService.UpdatePrice(
+                    accessToken,
+                    publicacao.PartnerId,
+                    publicacao.ClientSecret,
+                    publicacao.ShopId,
+                    new ShopeeUpdatePriceRequest
+                    {
+                        ItemId = publicacao.ItemId,
+                        Price = preco.Value,
+                        OriginalPrice = preco.Value
+                    },
+                    cancellationToken
+                );
+
+                await _erroService.ResolverErro(
+                    produto.Codigo.Value,
+                    produto.AplCod,
+                    publicacao.SyncConta,
+                    OperacaoPreco,
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                erro ??= ex;
+
+                await _erroService.RegistrarErro(
+                    produto,
+                    publicacao.SyncConta,
+                    OperacaoPreco,
+                    publicacao.ItemId,
+                    ex.Message,
+                    cancellationToken);
+            }
+        }
+
+        if (erro == null)
+            produto.DataPreco = dataAtualizacao;
+
         await _db.SaveChangesAsync(cancellationToken);
+
+        if (erro != null)
+            throw erro;
     }
+
+    private Task<List<PublicacaoConta>> BuscarPublicacoes(decimal codigo, decimal? aplCod, CancellationToken cancellationToken)
+    {
+        return _db.PublicacoesShopee
+            .Where(x =>
+                x.Codigo.HasValue
+                && x.Codigo.Value == codigo
+                && (x.AplCod == aplCod || (!x.AplCod.HasValue && !aplCod.HasValue))
+                && x.ItemId.HasValue
+                && x.PubStatus == StatusPublicacaoAtiva)
+            .Join(
+                _db.SyncShopee.Where(x =>
+                    !string.IsNullOrWhiteSpace(x.SyncConta)
+                    && x.PartnerId.HasValue
+                    && !string.IsNullOrWhiteSpace(x.ClientSecret)
+                    && x.ShopId.HasValue),
+                pub => pub.SyncConta,
+                sync => sync.SyncConta,
+                (pub, sync) => new PublicacaoConta(
+                    sync.Id,
+                    sync.SyncConta!,
+                    sync.PartnerId!.Value,
+                    sync.ClientSecret!,
+                    sync.ShopId!.Value,
+                    pub.ItemId!.Value))
+            .ToListAsync(cancellationToken);
+    }
+
+    private async Task RegistrarErroValidacao(
+        Produto produto,
+        List<PublicacaoConta> publicacoes,
+        string mensagemErro,
+        CancellationToken cancellationToken)
+    {
+        foreach (var publicacao in publicacoes)
+        {
+            await _erroService.RegistrarErro(
+                produto,
+                publicacao.SyncConta,
+                OperacaoPreco,
+                publicacao.ItemId,
+                mensagemErro,
+                cancellationToken);
+        }
+    }
+
+    private sealed record PublicacaoConta(int SyncId, string SyncConta, int PartnerId, string ClientSecret, int ShopId, int ItemId);
 }

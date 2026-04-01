@@ -14,6 +14,8 @@ public class IntegrationDbContext : DbContext
     public DbSet<ImagemFtp> ImagensFtp => Set<ImagemFtp>();
     public DbSet<Atributo> Atributos => Set<Atributo>();
     public DbSet<SyncShopee> SyncShopee => Set<SyncShopee>();
+    public DbSet<PubShopee> PublicacoesShopee => Set<PubShopee>();
+    public DbSet<PubShopeeErro> PublicacoesShopeeErro => Set<PubShopeeErro>();
     public DbSet<PedidoMarketplace> PedidosMarketplace => Set<PedidoMarketplace>();
     public DbSet<PedidoMarketplaceItem> PedidosMarketplaceItens => Set<PedidoMarketplaceItem>();
 
@@ -26,6 +28,7 @@ public class IntegrationDbContext : DbContext
 
             entity.Property(x => x.Id).HasColumnName("ID");
             entity.Property(x => x.Codigo).HasColumnName("CODIGO").HasPrecision(7, 0);
+            entity.Property(x => x.AplCod).HasColumnName("APLCOD").HasPrecision(7, 0);
             entity.Property(x => x.Sku).HasColumnName("SKU");
             entity.Property(x => x.Descricao).HasColumnName("DESCRICAO");
             entity.Property(x => x.Fabricante).HasColumnName("FABRICANTE");
@@ -58,13 +61,9 @@ public class IntegrationDbContext : DbContext
             entity.Property(x => x.Ncm).HasColumnName("NCM");
             entity.Property(x => x.Origem).HasColumnName("ORIGEM");
             entity.Property(x => x.Titulo).HasColumnName("TITULO");
-            entity.Property(x => x.DescricaoShopee).HasColumnName("DESCRICAO_SHOPEE");
             entity.Property(x => x.CategoriaId).HasColumnName("CATEGORIA_ID");
             entity.Property(x => x.MarcaId).HasColumnName("MARCA_ID");
             entity.Property(x => x.ChannelId).HasColumnName("CHANNEL_ID");
-            entity.Property(x => x.ItemId).HasColumnName("ITEM_ID");
-            entity.Property(x => x.Status).HasColumnName("STATUS");
-            entity.Property(x => x.Erro).HasColumnName("ERRO");
         });
 
         modelBuilder.Entity<ImagemFtp>(entity =>
@@ -99,6 +98,7 @@ public class IntegrationDbContext : DbContext
             entity.HasKey(x => x.Id);
 
             entity.Property(x => x.Id).HasColumnName("ID");
+            entity.Property(x => x.SyncConta).HasColumnName("SINCCONTA");
             entity.Property(x => x.SincDtRefToken).HasColumnName("SINCDTREFTOKEN");
             entity.Property(x => x.SincAccessToken).HasColumnName("SINCACCESSTOKEN");
             entity.Property(x => x.SincRefreshToken).HasColumnName("SINCREFRESHTOKEN");
@@ -110,6 +110,36 @@ public class IntegrationDbContext : DbContext
             entity.Property(x => x.SincDtDados).HasColumnName("SINCDTDADOS");
             entity.Property(x => x.SincDtExclusao).HasColumnName("SINCDTEXCLUSAO");
             entity.Property(x => x.SincDtPedidos).HasColumnName("SINCDTPEDIDOS");
+        });
+
+        modelBuilder.Entity<PubShopee>(entity =>
+        {
+            entity.ToTable("PUBSHOPEE");
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id).HasColumnName("ID");
+            entity.Property(x => x.Codigo).HasColumnName("CODIGO").HasPrecision(7, 0);
+            entity.Property(x => x.AplCod).HasColumnName("APLCOD").HasPrecision(7, 0);
+            entity.Property(x => x.SyncConta).HasColumnName("SINCCONTA");
+            entity.Property(x => x.ItemId).HasColumnName("ITEMID");
+            entity.Property(x => x.PubDtInc).HasColumnName("PUBDTINC");
+            entity.Property(x => x.PubStatus).HasColumnName("PUBSTATUS");
+        });
+
+        modelBuilder.Entity<PubShopeeErro>(entity =>
+        {
+            entity.ToTable("PUBSHOPEEERRO");
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id).HasColumnName("ID");
+            entity.Property(x => x.Codigo).HasColumnName("CODIGO").HasPrecision(7, 0);
+            entity.Property(x => x.AplCod).HasColumnName("APLCOD").HasPrecision(7, 0);
+            entity.Property(x => x.SyncConta).HasColumnName("SINCCONTA");
+            entity.Property(x => x.Operacao).HasColumnName("OPERACAO");
+            entity.Property(x => x.MensagemErro).HasColumnName("MENSAGEMERRO");
+            entity.Property(x => x.DtError).HasColumnName("DTERROR");
+            entity.Property(x => x.ItemId).HasColumnName("ITEMID");
+            entity.Property(x => x.StatusProcesso).HasColumnName("STATUSPROCESSO");
         });
 
         modelBuilder.Entity<PedidoMarketplace>(entity =>

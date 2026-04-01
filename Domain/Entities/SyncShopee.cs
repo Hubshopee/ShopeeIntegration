@@ -3,6 +3,7 @@ namespace Domain.Entities;
 public class SyncShopee
 {
     public int Id { get; set; }
+    public string? SyncConta { get; set; }
     public DateTime? SincDtRefToken { get; set; }
     public string? SincAccessToken { get; set; }
     public string? SincRefreshToken { get; set; }

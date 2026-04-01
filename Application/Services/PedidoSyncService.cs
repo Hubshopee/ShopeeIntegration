@@ -156,10 +156,23 @@ public class PedidoSyncService
 
         var produtos = await _db.Produtos
             .AsNoTracking()
+            .Join(
+                _db.PublicacoesShopee.AsNoTracking(),
+                produto => new { produto.Codigo, produto.AplCod },
+                publicacao => new { publicacao.Codigo, publicacao.AplCod },
+                (produto, publicacao) => new
+                {
+                    produto.Codigo,
+                    produto.Sku,
+                    produto.PrecoVenda,
+                    PublicacaoItemId = publicacao.ItemId,
+                    publicacao.PubStatus
+                })
             .Where(x =>
-                (x.ItemId.HasValue && itemIds.Contains(x.ItemId.Value))
+                (x.PublicacaoItemId.HasValue && itemIds.Contains(x.PublicacaoItemId.Value))
                 || (!string.IsNullOrWhiteSpace(x.Sku) && skus.Contains(x.Sku)))
-            .Select(x => new { x.ItemId, x.Sku, Lookup = new ProdutoPedidoLookup(x.Codigo, x.PrecoVenda) })
+            .Where(x => x.PubStatus == "A")
+            .Select(x => new { ItemId = x.PublicacaoItemId.HasValue ? (long?)x.PublicacaoItemId.Value : null, x.Sku, Lookup = new ProdutoPedidoLookup(x.Codigo, x.PrecoVenda) })
             .ToListAsync(cancellationToken);
 
         var produtoPorItemId = produtos

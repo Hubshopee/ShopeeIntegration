@@ -1,3 +1,4 @@
+using Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Infrastructure.Persistence;
@@ -27,8 +28,25 @@ public class TokenSyncService
             .OrderBy(x => x.Id)
             .FirstAsync();
 
+        return await ObterTokenValido(sync);
+    }
+
+    public async Task<string> ObterTokenValido(int syncId, CancellationToken cancellationToken = default)
+    {
+        var sync = await _db.SyncShopee
+            .FirstAsync(x => x.Id == syncId, cancellationToken);
+
+        return await ObterTokenValido(sync);
+    }
+
+    private async Task<string> ObterTokenValido(SyncShopee sync)
+    {
+        if (_db.Entry(sync).State == EntityState.Detached)
+            _db.Attach(sync);
+
         _logger.LogInformation(
-            "Token sync PartnerId:{partnerId} ShopId:{shopId} UltimoRefresh:{data}",
+            "Token sync Conta:{conta} PartnerId:{partnerId} ShopId:{shopId} UltimoRefresh:{data}",
+            sync.SyncConta,
             sync.PartnerId,
             sync.ShopId,
             sync.SincDtRefToken

@@ -4,6 +4,7 @@ public class Produto
 {
     public int Id { get; set; }
     public decimal? Codigo { get; set; }
+    public decimal? AplCod { get; set; }
     public string? Sku { get; set; }
     public string? Descricao { get; set; }
     public string? Fabricante { get; set; }
@@ -36,11 +37,7 @@ public class Produto
     public string? Ncm { get; set; }
     public string? Origem { get; set; }
     public string? Titulo { get; set; }
-    public string? DescricaoShopee { get; set; }
     public long? CategoriaId { get; set; }
     public long? MarcaId { get; set; }
     public long? ChannelId { get; set; }
-    public long? ItemId { get; set; }
-    public string? Status { get; set; }
-    public string? Erro { get; set; }
 }
